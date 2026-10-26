@@ -16,8 +16,6 @@
 
 #define USING_LOG_PREFIX STORAGE_FTS
 #include "ob_fts_index_builder_util.h"
-
-#include <thread>
 #include "ob_index_builder_util.h"
 #include "sql/resolver/ddl/ob_ddl_resolver.h"
 #include "sql/resolver/expr/ob_raw_expr_util.h"
@@ -1048,18 +1046,9 @@ int ObFtsIndexBuilderUtil::decide_parallelism(
         break;
       case share::schema::ObIndexType::INDEX_TYPE_DOC_ID_ROWKEY_LOCAL:
       case share::schema::ObIndexType::INDEX_TYPE_FTS_INDEX_LOCAL:
-      case share::schema::ObIndexType::INDEX_TYPE_FTS_DOC_WORD_LOCAL: {
-        // The three full-text auxiliary indexes are populated by a plain
-        // INSERT ... SELECT over the base table, so the build degree does not
-        // have to stay pinned to one when the DDL arrives without an explicit
-        // degree (the common case for ALTER TABLE ... ADD FULLTEXT INDEX).
-        // Follow the machine instead, but keep the degree bounded so that the
-        // per-worker word maps stay small.
-        const int64_t hw_threads = static_cast<int64_t>(std::thread::hardware_concurrency());
-        const int64_t hw_degree = MIN(MAX(hw_threads / 2, 1L), 8L);
-        decided_parallelism = MAX(MAX(original_parallelism / 3, hw_degree), 1L);
+      case share::schema::ObIndexType::INDEX_TYPE_FTS_DOC_WORD_LOCAL:
+        decided_parallelism = MAX(original_parallelism / 3, 1L);
         break;
-      }
       case share::schema::ObIndexType::INDEX_TYPE_NORMAL_MULTIVALUE_LOCAL:
       case share::schema::ObIndexType::INDEX_TYPE_UNIQUE_MULTIVALUE_LOCAL:
         decided_parallelism = MAX(original_parallelism / 2, 1L);
