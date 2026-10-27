@@ -28,6 +28,21 @@ namespace oceanbase
 {
 namespace share
 {
+// Copies src into dst using the allocator, or resets dst when src is empty.
+// Unlike a single if/else-if ladder this never short-circuits: every field is
+// always visited, so a keyless endpoint keeps its provider and model name.
+static int copy_or_reset(common::ObIAllocator &allocator,
+                         const common::ObString &src,
+                         common::ObString &dst)
+{
+  int ret = OB_SUCCESS;
+  if (src.empty()) {
+    dst.reset();
+  } else {
+    ret = common::ob_write_string(allocator, src, dst);
+  }
+  return ret;
+}
 const ObString ObAiModelEndpointInfo::DEFAULT_SCOPE = "ALL";
 
 const char *VALID_PROVIDERS[] = {
@@ -81,20 +96,19 @@ int ObAiModelEndpointInfo::deep_copy(
   int ret = OB_SUCCESS;
   reset();
   endpoint_id_ = other.endpoint_id_;
-  if (OB_FAIL(ob_write_string(allocator, other.name_, name_))) {
-  } else if (OB_FAIL(ob_write_string(allocator, other.scope_, scope_))) {
-  } else if (OB_FAIL(ob_write_string(allocator, other.ai_model_name_, ai_model_name_))) {
-  } else if (OB_FAIL(ob_write_string(allocator, other.url_, url_))) {
-  } else if (OB_FAIL(ob_write_string(allocator, other.access_key_, access_key_))) {
-  } else if (OB_FAIL(ob_write_string(allocator, other.provider_, provider_))) {
-  } else if (OB_FAIL(ob_write_string(allocator, other.request_model_name_, request_model_name_))) {
-  } else if (OB_FAIL(ob_write_string(allocator, other.parameters_, parameters_))) {
-  } else if (OB_FAIL(ob_write_string(allocator, other.request_transform_fn_, request_transform_fn_))) {
-  } else if (OB_FAIL(ob_write_string(allocator, other.response_transform_fn_, response_transform_fn_))) {
+  if (OB_FAIL(copy_or_reset(allocator, other.name_, name_))) {
+  } else if (OB_FAIL(copy_or_reset(allocator, other.scope_, scope_))) {
+  } else if (OB_FAIL(copy_or_reset(allocator, other.ai_model_name_, ai_model_name_))) {
+  } else if (OB_FAIL(copy_or_reset(allocator, other.url_, url_))) {
+  } else if (OB_FAIL(copy_or_reset(allocator, other.access_key_, access_key_))) {
+  } else if (OB_FAIL(copy_or_reset(allocator, other.provider_, provider_))) {
+  } else if (OB_FAIL(copy_or_reset(allocator, other.request_model_name_, request_model_name_))) {
+  } else if (OB_FAIL(copy_or_reset(allocator, other.parameters_, parameters_))) {
+  } else if (OB_FAIL(copy_or_reset(allocator, other.request_transform_fn_, request_transform_fn_))) {
+  } else if (OB_FAIL(copy_or_reset(allocator, other.response_transform_fn_, response_transform_fn_))) {
   }
   return ret;
 }
-
 int ObAiModelEndpointInfo::check_valid() const
 {
   int ret = OB_SUCCESS;
@@ -198,7 +212,10 @@ int ObAiModelEndpointInfo::encrypt_access_key_(ObIAllocator &allocator, const Ob
 int ObAiModelEndpointInfo::decrypt_access_key_(ObIAllocator &allocator, const ObString &encrypted_access_key, ObString &unencrypted_access_key) const
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(ob_write_string(allocator, encrypted_access_key, unencrypted_access_key))) {
+  if (encrypted_access_key.empty()) {
+    // Keyless providers (ollama) legitimately store no access key at all.
+    unencrypted_access_key = ObString();
+  } else if (OB_FAIL(ob_write_string(allocator, encrypted_access_key, unencrypted_access_key))) {
   }
   return ret;
 }
@@ -227,7 +244,10 @@ EndpointType::TYPE EndpointType::str_to_endpoint_type(const ObString &type_str)
 int ObAiModelEndpointInfo::get_unencrypted_access_key(common::ObIAllocator &allocator, ObString &unencrypted_access_key) const
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(decrypt_access_key_(allocator, access_key_, unencrypted_access_key))) {
+  if (access_key_.empty()) {
+    // Keyless providers (e.g. ollama) legitimately carry an empty access key.
+    unencrypted_access_key.reset();
+  } else if (OB_FAIL(decrypt_access_key_(allocator, access_key_, unencrypted_access_key))) {
   }
   return ret;
 }
