@@ -12185,6 +12185,21 @@ int ObLogPlan::prepare_text_retrieval_info(const uint64_t ref_table_id,
   ObSEArray<ObAuxTableMetaInfo, 4> index_infos;
   bool need_calc_relevance = true;
   ObSEArray<ObExprConstraint, 2> constraints;
+  // A query that only counts matching rows never materialises the relevance
+  // score. Skipping it saves one forward-index lookup per matched document.
+  if (get_stmt()->is_select_stmt()) {
+    const ObSelectStmt *select_stmt = static_cast<const ObSelectStmt *>(get_stmt());
+    if (1 == select_stmt->get_select_item_size() && !select_stmt->has_order_by() &&
+        !select_stmt->has_group_by() && !select_stmt->has_having() &&
+        !select_stmt->has_rollup()) {
+      const ObRawExpr *select_expr = select_stmt->get_select_item(0).expr_;
+      if (NULL != select_expr && T_FUN_COUNT == select_expr->get_expr_type() &&
+          0 == select_expr->get_param_count()) {
+        need_calc_relevance = false;
+      }
+    }
+  }
+
   uint64_t docid_col_id = OB_INVALID_ID;
   if (OB_ISNULL(match_against) || OB_ISNULL(get_stmt()) || OB_ISNULL(get_optimizer_context().get_query_ctx())) {
     ret = OB_INVALID_ARGUMENT;
