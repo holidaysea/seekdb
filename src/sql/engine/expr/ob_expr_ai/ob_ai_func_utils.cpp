@@ -291,7 +291,12 @@ int ObOllamaUtils::get_header(common::ObIAllocator &allocator,
                               common::ObArray<ObString> &headers) 
 {
   int ret = OB_SUCCESS;
-  // ollama header is empty, do nothing
+  // Ollama authenticates with neither api key nor bearer token, but the http client
+  // rejects an empty header list, so a content type is the minimum it accepts.
+  UNUSED(allocator);
+  const ObString content_type = ObString::make_string("Content-Type: application/json");
+  if (OB_FAIL(headers.push_back(content_type))) {
+  }
   return ret;
 }
 
@@ -310,8 +315,12 @@ int ObOllamaUtils::ObOllamaComplete::get_body(common::ObIAllocator &allocator,
                                               common::ObJsonObject *&body) 
 {
   int ret = OB_SUCCESS;
-  if (model.empty() || content.empty()) { 
+  if (model.empty()) {
     ret = OB_INVALID_ARGUMENT;
+    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ollama request model must not be empty");
+  } else if (content.empty()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ollama request prompt must not be empty");
   } else {
     // {"model": "llama3.1", "prompt": "What is the capital of France?", "stream": false}
     ObJsonObject *body_obj = nullptr;
@@ -808,11 +817,13 @@ int ObAIFuncUtils::get_header(ObIAllocator &allocator,
     ObAIFuncIComplete *complete_provider = nullptr;
     if (OB_FAIL(get_complete_provider(allocator, endpoint_info.get_provider(), complete_provider))) {
     } else if (OB_FAIL(complete_provider->get_header(allocator, unencrypted_access_key, headers))) {
+    LOG_USER_ERROR(OB_ERR_UNEXPECTED, "dsh-m01-chdr");
     }
   } else if (ObAIFuncUtils::is_dense_embedding_type(&info)) {
     ObAIFuncIEmbed *embed_provider = nullptr;
     if (OB_FAIL(get_embed_provider(allocator, endpoint_info.get_provider(), embed_provider))) {
     } else if (OB_FAIL(embed_provider->get_header(allocator, unencrypted_access_key, headers))) {
+    LOG_USER_ERROR(OB_ERR_UNEXPECTED, "dsh-m02-ehdr");
     }
   } else if (ObAIFuncUtils::is_rerank_type(&info)) {
     ObAIFuncIRerank *rerank_provider = nullptr;
@@ -840,6 +851,7 @@ int ObAIFuncUtils::get_complete_body(ObIAllocator &allocator,
   ObAIFuncIComplete *complete_provider = nullptr;
   if (OB_FAIL(get_complete_provider(allocator, endpoint_info.get_provider(), complete_provider))) {
   } else if (OB_FAIL(complete_provider->get_body(allocator, request_model_name, prompt, content, config, body))) {
+  LOG_USER_ERROR(OB_ERR_UNEXPECTED, "dsh-m03-cbody");
   }
   return ret;
 }
@@ -870,6 +882,7 @@ int ObAIFuncUtils::get_embed_body(ObIAllocator &allocator,
   ObAIFuncIEmbed *embed_provider = nullptr;
   if (OB_FAIL(get_embed_provider(allocator, endpoint_info.get_provider(), embed_provider))) {
   } else if (OB_FAIL(embed_provider->get_body(allocator, request_model_name, contents, config, body))) {
+  LOG_USER_ERROR(OB_ERR_UNEXPECTED, "dsh-m04-ebody");
   }
   return ret;
 }
@@ -904,6 +917,7 @@ int ObAIFuncUtils::parse_complete_output(ObIAllocator &allocator,
   ObAIFuncIComplete *complete_provider = nullptr;
   if (OB_FAIL(get_complete_provider(allocator, endpoint_info.get_provider(), complete_provider))) {
   } else if (OB_FAIL(complete_provider->parse_output(allocator, http_response, result))) {
+  LOG_USER_ERROR(OB_ERR_UNEXPECTED, "dsh-m05-cparse");
   }
   return ret;
 }
@@ -917,6 +931,7 @@ int ObAIFuncUtils::parse_embed_output(ObIAllocator &allocator,
   ObAIFuncIEmbed *embed_provider = nullptr;
   if (OB_FAIL(get_embed_provider(allocator, endpoint_info.get_provider(), embed_provider))) {
   } else if (OB_FAIL(embed_provider->parse_output(allocator, http_response, result))) {
+  LOG_USER_ERROR(OB_ERR_UNEXPECTED, "dsh-m06-eparse");
   }
   return ret;
 }
@@ -1097,6 +1112,8 @@ int ObAIFuncUtils::get_complete_provider(ObIAllocator &allocator, const ObString
       || ob_provider_check(provider, ObAIFuncProviderUtils::SILICONFLOW)
       || ob_provider_check(provider, ObAIFuncProviderUtils::HUNYUAN)) {
     complete_provider = OB_NEWx(ObOpenAIUtils::ObOpenAIComplete, &allocator);
+  } else if (ob_provider_check(provider, ObAIFuncProviderUtils::OLLAMA)) {
+    complete_provider = OB_NEWx(ObOllamaUtils::ObOllamaComplete, &allocator);
   } else if (ob_provider_check(provider, ObAIFuncProviderUtils::DASHSCOPE)) {
     complete_provider = OB_NEWx(ObDashscopeUtils::ObDashscopeComplete, &allocator);
   } else {
@@ -1120,6 +1137,8 @@ int ObAIFuncUtils::get_embed_provider(ObIAllocator &allocator, const ObString &p
       || ob_provider_check(provider, ObAIFuncProviderUtils::HUNYUAN)
       || ob_provider_check(provider, ObAIFuncProviderUtils::SILICONFLOW)) {
     embed_provider = OB_NEWx(ObOpenAIUtils::ObOpenAIEmbed, &allocator);
+  } else if (ob_provider_check(provider, ObAIFuncProviderUtils::OLLAMA)) {
+    embed_provider = OB_NEWx(ObOllamaUtils::ObOllamaEmbed, &allocator);
   } else if (ob_provider_check(provider, ObAIFuncProviderUtils::DASHSCOPE)) {
     embed_provider = OB_NEWx(ObDashscopeUtils::ObDashscopeEmbed, &allocator);
   } else {
@@ -1329,15 +1348,25 @@ int ObAIFuncModel::call_completion(ObString &prompt, ObJsonObject *config, ObStr
   ObAIFuncClient client;
   ObString unencrypted_access_key;
   ObString request_model_name = get_request_model_name();
+  LOG_ERROR("dsh-pre", K(request_model_name), K(endpoint_info_.get_provider()), K(endpoint_info_.get_url()));
   if (!is_completion_type()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_complete, info type is not completion");
   } else if (OB_FAIL(ObAIFuncUtils::get_complete_provider(*allocator_, endpoint_info_.get_provider(), complete_provider))) {
   } else if (OB_FAIL(endpoint_info_.get_unencrypted_access_key(*allocator_, unencrypted_access_key))) {
+  FORWARD_USER_ERROR(OB_INVALID_ARGUMENT, "M07key");
   } else if (OB_FAIL(complete_provider->get_header(*allocator_, unencrypted_access_key, headers))) {
+  FORWARD_USER_ERROR(OB_INVALID_ARGUMENT, "M08hdr");
+    LOG_ERROR("dsh-step-header", K(ret));
   } else if (OB_FAIL(complete_provider->get_body(*allocator_, request_model_name, prompt_str, prompt, config, body))) {
+  FORWARD_USER_ERROR(OB_INVALID_ARGUMENT, "M09body");
+    LOG_ERROR("dsh-step-body", K(ret), K(request_model_name));
   } else if (OB_FAIL(client.send_post(*allocator_, endpoint_info_.get_url(), headers, body, response))) {
+  FORWARD_USER_ERROR(OB_INVALID_ARGUMENT, "M10post");
+    LOG_ERROR("dsh-step-post", K(ret), K(endpoint_info_.get_url()));
   } else if (OB_FAIL(complete_provider->parse_output(*allocator_, response, result_base))) {
+  FORWARD_USER_ERROR(OB_INVALID_ARGUMENT, "M11parse");
+    LOG_ERROR("dsh-step-parse", K(ret));
   } else if (OB_FAIL(ObAIFuncJsonUtils::print_json_to_str(*allocator_, result_base, result_str))) {
   } else if (result_str.empty()) {
     // A successful HTTP call that carries no generated text is not a valid completion.
@@ -1346,6 +1375,9 @@ int ObAIFuncModel::call_completion(ObString &prompt, ObJsonObject *config, ObStr
     LOG_USER_ERROR(OB_ERR_UNEXPECTED, "ai_complete, model returned an empty response");
   } else {
     result = result_str;
+  }
+  if (OB_FAIL(ret)) {
+    LOG_WARN("dsh_dbg call_completion failed", K(ret), "provider", endpoint_info_.get_provider(), K(lbt()));
   }
   if (ret == OB_INVALID_DATA) {
     ObString response_str;
@@ -1375,16 +1407,20 @@ int ObAIFuncModel::call_completion_vector(ObArray<ObString> &prompts, ObJsonObje
   ObAIFuncClient client;
   ObString unencrypted_access_key;
   ObString request_model_name = get_request_model_name();
+  LOG_ERROR("dsh-pre", K(request_model_name), K(endpoint_info_.get_provider()), K(endpoint_info_.get_url()));
   if (!is_completion_type()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_complete, info type is not completion");
   } else if (OB_FAIL(ObAIFuncUtils::get_complete_provider(*allocator_, endpoint_info_.get_provider(), complete_provider))) {
   } else if (OB_FAIL(endpoint_info_.get_unencrypted_access_key(*allocator_, unencrypted_access_key))) {
+  LOG_USER_ERROR(OB_ERR_UNEXPECTED, "dsh-m12-key");
   } else if (OB_FAIL(complete_provider->get_header(*allocator_, unencrypted_access_key, headers))) {
+  LOG_USER_ERROR(OB_ERR_UNEXPECTED, "dsh-m13-chdr");
   } else {
     for (int i = 0; OB_SUCC(ret) && i < prompts.count(); i++) {
       ObString prompt = prompts[i];
       if (OB_FAIL(complete_provider->get_body(*allocator_, request_model_name, prompt_str, prompt, config, body))) {
+      LOG_USER_ERROR(OB_ERR_UNEXPECTED, "dsh-m14-cbody");
       } else if (OB_FAIL(body_array.push_back(body))) {
       }
     }
@@ -1397,6 +1433,7 @@ int ObAIFuncModel::call_completion_vector(ObArray<ObString> &prompts, ObJsonObje
       ObJsonObject *response = response_array[i];
       ObStringBuffer result_buf(allocator_);
       if (OB_FAIL(complete_provider->parse_output(*allocator_, response, result_base))) {
+      LOG_USER_ERROR(OB_ERR_UNEXPECTED, "dsh-m15-cparse");
       } else if (OB_FAIL(result_base->print(result_buf, 0))) {
       } else {
         results.push_back(result_buf.string());
@@ -1444,13 +1481,16 @@ int ObAIFuncModel::call_dense_embedding_vector(ObArray<ObString> &contents, ObJs
     LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, info type is not dense embedding");
   } else if (OB_FAIL(ObAIFuncUtils::get_embed_provider(*allocator_, endpoint_info_.get_provider(), embed_provider))) {
   } else if (OB_FAIL(endpoint_info_.get_unencrypted_access_key(*allocator_, unencrypted_access_key))) {
+  LOG_USER_ERROR(OB_ERR_UNEXPECTED, "dsh-m16-key");
   } else if (OB_FAIL(embed_provider->get_header(*allocator_, unencrypted_access_key, headers))) {
+  LOG_USER_ERROR(OB_ERR_UNEXPECTED, "dsh-m17-ehdr");
   } else {
     for (int i = 0; OB_SUCC(ret) && i < contents.count(); i++) {
       ObString content = contents[i];
       ObArray<ObString> content_array;
       if (OB_FAIL(content_array.push_back(content))) {
       } else if (OB_FAIL(embed_provider->get_body(*allocator_, request_model_name, content_array, config, body))) {
+      LOG_USER_ERROR(OB_ERR_UNEXPECTED, "dsh-m18-ebody");
       } else if (OB_FAIL(body_array.push_back(body))) {
       }
     }
@@ -1463,6 +1503,7 @@ int ObAIFuncModel::call_dense_embedding_vector(ObArray<ObString> &contents, ObJs
       ObJsonObject *response = response_array[i];
       ObStringBuffer result_buf(allocator_);
       if (OB_FAIL(embed_provider->parse_output(*allocator_, response, result_base))) {
+      LOG_USER_ERROR(OB_ERR_UNEXPECTED, "dsh-m19-eparse");
       } else if (OB_FAIL(result_base->print(result_buf, 0))) {
       } else {
         results.push_back(result_buf.string());
@@ -1502,10 +1543,15 @@ int ObAIFuncModel::call_dense_embedding_vector_v2(ObArray<ObString> &content, Ob
     LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, info type is not dense embedding");
   } else if (OB_FAIL(ObAIFuncUtils::get_embed_provider(*allocator_, endpoint_info_.get_provider(), embed_provider))) {
   } else if (OB_FAIL(endpoint_info_.get_unencrypted_access_key(*allocator_, unencrypted_access_key))) {
+  LOG_USER_ERROR(OB_ERR_UNEXPECTED, "dsh-m20-key");
   } else if (OB_FAIL(embed_provider->get_header(*allocator_, unencrypted_access_key, headers))) {
+  LOG_USER_ERROR(OB_ERR_UNEXPECTED, "dsh-m21-ehdr");
   } else if (OB_FAIL(embed_provider->get_body(*allocator_, request_model_name, content, config, body))) {
+  LOG_USER_ERROR(OB_ERR_UNEXPECTED, "dsh-m22-ebody");
   } else if (OB_FAIL(client.send_post(*allocator_, endpoint_info_.get_url(), headers, body, response))) {
+  LOG_USER_ERROR(OB_ERR_UNEXPECTED, "dsh-m23-post");
   } else if (OB_FAIL(embed_provider->parse_output(*allocator_, response, result_base))) {
+  LOG_USER_ERROR(OB_ERR_UNEXPECTED, "dsh-m24-eparse");
   } else {
     ObJsonArray *result_array = static_cast<ObJsonArray *>(result_base);
     int64_t count = result_array->element_count();
@@ -1556,9 +1602,11 @@ int ObAIFuncModel::call_rerank(ObString &query, ObJsonArray *contents, ObJsonArr
     LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_rerank, info type is not rerank");
   } else if (OB_FAIL(ObAIFuncUtils::get_rerank_provider(*allocator_, endpoint_info_.get_provider(), rerank_provider))) {
   } else if (OB_FAIL(endpoint_info_.get_unencrypted_access_key(*allocator_, unencrypted_access_key))) {
+  LOG_USER_ERROR(OB_ERR_UNEXPECTED, "dsh-m25-key");
   } else if (OB_FAIL(rerank_provider->get_header(*allocator_, unencrypted_access_key, headers))) {
   } else if (OB_FAIL(rerank_provider->get_body(*allocator_, request_model_name, query, contents, nullptr, body))) {
   } else if (OB_FAIL(client.send_post(*allocator_, endpoint_info_.get_url(), headers, body, response))) {
+  LOG_USER_ERROR(OB_ERR_UNEXPECTED, "dsh-m26-post");
   } else if (OB_FAIL(rerank_provider->parse_output(*allocator_, response, result_base))) {
   } else {
     results = static_cast<ObJsonArray *>(result_base);

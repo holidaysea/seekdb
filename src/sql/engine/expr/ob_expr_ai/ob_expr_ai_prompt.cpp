@@ -129,7 +129,9 @@ int ObExprAIPrompt::eval_ai_prompt(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &
             LOG_WARN("failed to append json argument", K(ret));
           }
         }
-      } else if (ob_is_string_tc(arg->datum_meta_.type_)) {
+      } else if (ob_is_string_type(arg->datum_meta_.type_)) {
+        // TEXT / LONGTEXT arguments are string types too: they are read through
+        // the lob header aware path below instead of being rejected.
         ObDatum *datum = NULL;
         ObString arg_str;
         ObJsonString *arg_json_str = NULL;
