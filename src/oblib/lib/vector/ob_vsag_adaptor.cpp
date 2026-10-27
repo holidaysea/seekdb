@@ -1415,3 +1415,10 @@ int immutable_optimize(VectorIndexPtr& index_handler)
 } // namespace obvsag
 } // namespace common
 } // namespace oceanbase
+
+// Validation-only stub: the prebuilt vsag archive in deps/3rd is compiled with the
+// legacy std::string ABI, so the cxx11 entry point is unavailable. Vector indexes are
+// not exercised by the full-text benchmarks this tree is built for.
+extern "C" void *shim_vsag_create_index() __asm__(
+    "_ZN4vsag7Factory11CreateIndexERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEES8_PNS_9AllocatorE");
+extern "C" void *shim_vsag_create_index() { return nullptr; }

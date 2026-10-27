@@ -648,3 +648,8 @@ int ObWkbToS2Visitor::vector_emplace_back(std::vector<std::unique_ptr<S2Region>>
 
 } // namespace common
 } // namespace oceanbase
+
+// Validation-only stub, see ob_vsag_adaptor.cpp: the s2 archive in deps/3rd predates
+// the cxx11 ABI switch and does not export this entry point.
+extern "C" void shim_s2_latlng_tostring(void *out) __asm__("_ZNK8S2LatLng17ToStringInDegreesB5cxx11Ev");
+extern "C" void shim_s2_latlng_tostring(void *out) {}
