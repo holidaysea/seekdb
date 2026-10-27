@@ -291,7 +291,12 @@ int ObOllamaUtils::get_header(common::ObIAllocator &allocator,
                               common::ObArray<ObString> &headers) 
 {
   int ret = OB_SUCCESS;
-  // ollama header is empty, do nothing
+  // Ollama authenticates with neither api key nor bearer token, but the http client
+  // rejects an empty header list, so a content type is the minimum it accepts.
+  UNUSED(allocator);
+  const ObString content_type = ObString::make_string("Content-Type: application/json");
+  if (OB_FAIL(headers.push_back(content_type))) {
+  }
   return ret;
 }
 
