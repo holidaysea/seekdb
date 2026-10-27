@@ -98,8 +98,17 @@ int validate_dense_embedding(const ObString &embedding_str, const int64_t expect
       bool closed = false;
       while (OB_SUCC(ret) && pos < length) {
         const char ch = text[pos];
-        if (' ' == ch || '\t' == ch || '\n' == ch || '\r' == ch || ',' == ch) {
+        if (' ' == ch || '\t' == ch || '\n' == ch || '\r' == ch) {
           ++pos;
+        } else if (',' == ch) {
+          if (expect_value) {
+            // Empty element such as "[1,,2]".
+            ret = OB_ERR_UNEXPECTED;
+            LOG_USER_ERROR(OB_ERR_UNEXPECTED, "ai_embed, embedding vector must contain numbers only");
+          } else {
+            expect_value = true;
+            ++pos;
+          }
         } else if (']' == ch) {
           ++pos;
           closed = true;
@@ -192,9 +201,12 @@ int ObExprAIEmbed::eval_ai_embed(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &re
   ObDatum *arg_dim = nullptr;
   if (expr.arg_cnt_ == 3 ? OB_FAIL(expr.eval_param_value(ctx, arg_model_id, arg_content, arg_dim))
                          : OB_FAIL(expr.eval_param_value(ctx, arg_model_id, arg_content))) {
-  } else if (arg_model_id->is_null() || arg_content->is_null()) {
+  } else if (arg_model_id->is_null()) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, model id or content is null");
+    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, model id is null");
+    res.set_null();
+  } else if (arg_content->is_null()) {
+    // NULL input propagates to a NULL result: the row is not sent to the model.
     res.set_null();
   } else {
     ObEvalCtx::TempAllocGuard tmp_alloc_g(ctx);
