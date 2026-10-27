@@ -378,26 +378,60 @@ int ObFTRangeDict::match_with_hit(const ObString &single_word,
   return last_hit.dict_->match_with_hit(single_word, last_hit, hit);
 }
 
+namespace
+{
+// Same two comparisons as the original linear scan (same collation, same
+// methods), just factored out so that the binary search and the last-hit fast
+// path perform identical range selection.
+bool is_word_in_range(const ObFTRangeDict::ObFTRange &range, const ObString &single_word)
+{
+  return ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
+                           range.start_.get_word(),
+                           single_word) <= 0
+         && ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
+                              range.end_.get_word(),
+                              single_word) >= 0;
+}
+} // namespace
+
 int ObFTRangeDict::find_first_char_range(const ObString &single_word, ObIFTDict *&dict) const
 {
   int ret = OB_SUCCESS;
-  bool found = false;
-  for (int i = 0; OB_SUCC(ret) && !found && i < range_dicts_.size(); ++i) {
-    if (ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                          range_dicts_[i].start_.get_word(),
-                          single_word)
-            <= 0
-        && ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                             range_dicts_[i].end_.get_word(),
-                             single_word)
-               >= 0) {
-      dict = range_dicts_[i].dict_;
-      found = true;
+  const int64_t range_count = range_dicts_.size();
+  int64_t matched = -1;
+  // build_ranges() splits an ascending dict iterator into consecutive chunks, so
+  // range_dicts_ is ordered by start_ and its ranges are disjoint: the only
+  // range that can contain single_word is the last one whose start_ <= it.
+  if (range_count <= 0) {
+  } else if (last_range_idx_ >= 0 && last_range_idx_ < range_count
+             && is_word_in_range(range_dicts_[last_range_idx_], single_word)) {
+    // Neighbouring characters of a document almost always fall into the same
+    // range, so the range that matched last time is worth checking first.
+    matched = last_range_idx_;
+  } else {
+    int64_t lo = 0;
+    int64_t hi = range_count - 1;
+    while (lo <= hi) {
+      const int64_t mid = lo + ((hi - lo) >> 1);
+      if (ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
+                            range_dicts_[mid].start_.get_word(),
+                            single_word) <= 0) {
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    // hi is now the last index with start_ <= single_word (or -1).
+    if (hi >= 0 && is_word_in_range(range_dicts_[hi], single_word)) {
+      matched = hi;
     }
   }
-  if (!found) {
+  if (matched < 0) {
     // not found, dis match
     ret = OB_ENTRY_NOT_EXIST;
+  } else {
+    dict = range_dicts_[matched].dict_;
+    last_range_idx_ = matched;
   }
   return ret;
 }

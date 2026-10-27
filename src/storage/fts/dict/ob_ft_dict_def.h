@@ -40,9 +40,28 @@ public:
   ObFTSingleWord(const ObFTSingleWord &other) = default;
   ObFTSingleWord &operator=(const ObFTSingleWord &other) = default;
 
-  int32_t set_word(const char *word, int32_t word_len);
-  ObString get_word() const;
-  bool operator==(const ObFTSingleWord &other) const;
+  // These accessors are called once per trie step and once per hash map probe,
+  // i.e. several times per input character. Out of line they cost a call plus a
+  // spilled/returned ObString for a 1..4 byte comparison, so keep them here.
+  int32_t set_word(const char *word, int32_t word_len)
+  {
+    int ret = OB_SUCCESS;
+    if (OB_ISNULL(word)) {
+      ret = OB_INVALID_ARGUMENT;
+    } else if (word_len > ObCharset::MAX_MB_LEN) {
+      ret = OB_SIZE_OVERFLOW;
+    } else {
+      memcpy(this->word, word, word_len);
+      this->word_len = static_cast<uint8_t>(word_len);
+    }
+    return ret;
+  }
+  ObString get_word() const { return ObString(word_len, word); }
+  bool operator==(const ObFTSingleWord &other) const
+  {
+    return (this == &other)
+           || (word_len == other.word_len && 0 == memcmp(word, other.word, word_len));
+  }
 
 public:
   char word[common::ObCharset::MAX_MB_LEN];

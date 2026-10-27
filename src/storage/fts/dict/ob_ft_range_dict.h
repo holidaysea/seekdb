@@ -39,7 +39,7 @@ public:
                 ObFTCacheRangeContainer *range_container,
                 const ObFTDictDesc &desc)
       : is_inited_(false), desc_(desc), range_alloc_(lib::ObMemAttr("Range Dict")),
-        range_dicts_(&range_alloc_), range_container_(range_container)
+        range_dicts_(&range_alloc_), range_container_(range_container), last_range_idx_(-1)
   {
   }
   ~ObFTRangeDict() override{};
@@ -106,6 +106,10 @@ private:
   ObArenaAllocator range_alloc_;
   ObVector<ObFTRange, ObArenaAllocator> range_dicts_;
   ObFTCacheRangeContainer *range_container_; // only used to read cache
+  // Index of the range that matched last time. An ObFTRangeDict is built per
+  // parser instance (per document / per tokenize call) and is never shared, so
+  // caching the last hit here needs no synchronization.
+  mutable int64_t last_range_idx_;
 
 private:
   DISALLOW_COPY_AND_ASSIGN(ObFTRangeDict);

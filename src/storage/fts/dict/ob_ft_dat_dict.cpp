@@ -254,13 +254,13 @@ int ObFTDATReader<DATA_TYPE>::match_with_hit(const ObString &ft_char,
   int ret = OB_SUCCESS;
   ObFTWordCode code;
   hit.set_unmatch();
-  auto *map = dat_->get_map();
+  ObArrayHashMap *map = dat_->get_map();
   int32_t *base = reinterpret_cast<int32_t *>(dat_->buff + dat_->base_offset_);
   int32_t *check = reinterpret_cast<int32_t *>(dat_->buff + dat_->check_offset_);
 
   ObFTSingleWord word;
   word.set_word(ft_char.ptr(), ft_char.length());
-  if (OB_FAIL(dat_->get_map()->find(word, code)) && OB_ENTRY_NOT_EXIST != ret) {
+  if (OB_FAIL(map->find(word, code)) && OB_ENTRY_NOT_EXIST != ret) {
   } else if (OB_ENTRY_NOT_EXIST == ret) {
     ret = OB_SUCCESS;
     hit.set_unmatch();
@@ -310,7 +310,13 @@ int ObArrayHashMap::find(const ObFTSingleWord &word, ObFTWordCode &code) const
       ret = OB_SUCCESS;
       break;
     } else {
-      index = (index + 3) % header_.capacity_;
+      // index < header_.capacity_ holds for every probe, so index + 3 needs at
+      // most one subtraction; this replaces the 64-bit division that the modulo
+      // compiles to (capacity_ is not a power of two).
+      index += 3;
+      if (OB_UNLIKELY(index >= header_.capacity_)) {
+        index -= header_.capacity_;
+      }
     }
   }
   return ret;
@@ -322,7 +328,11 @@ int ObArrayHashMap::insert(const ObString &key, ObFTWordCode code)
   uint64_t hash = key.hash();
   uint64_t index = hash % header_.capacity_;
   while (header_.data[index].used) {
-    index = (index + 3) % header_.capacity_;
+    // Same step of 3 as before, but without the 64-bit division per probe.
+    index += 3;
+    if (OB_UNLIKELY(index >= header_.capacity_)) {
+      index -= header_.capacity_;
+    }
   }
 
   header_.data[index].code = code;

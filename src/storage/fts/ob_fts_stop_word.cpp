@@ -165,32 +165,12 @@ int ObAddWord::casedown_word(const ObFTWord &src, ObFTWord &dst)
     ret = OB_INVALID_ARGUMENT;
   } else if (flag_.casedown()) {
     ObString dst_str;
-    const ObString src_word = src.get_word().get_string();
-    const ObCollationType collation_type = word_meta_.get_collation_type();
-    bool ascii_only = src_word.length() > 0 && !ObCharset::is_bin_sort(collation_type);
-    for (int32_t i = 0; ascii_only && i < src_word.length(); ++i) {
-      if (static_cast<unsigned char>(src_word.ptr()[i]) >= 0x80) {
-        ascii_only = false;
-      }
-    }
-    if (ascii_only) {
-      // ObCharset::tolower() copies the word and then walks the collation table
-      // one byte at a time; for pure ASCII words the folding is a plain
-      // 'A'..'Z' -> 'a'..'z' mapping, which is what every case-insensitive
-      // collation in this server does, so fold in place without the table walk.
-      char *buf = static_cast<char *>(allocator_.alloc(src_word.length()));
-      if (OB_ISNULL(buf)) {
-        ret = OB_ALLOCATE_MEMORY_FAILED;
-      } else {
-        for (int32_t i = 0; i < src_word.length(); ++i) {
-          const unsigned char c = static_cast<unsigned char>(src_word.ptr()[i]);
-          buf[i] = static_cast<char>((c >= 'A' && c <= 'Z') ? c - 'A' + 'a' : c);
-        }
-        dst_str.assign_ptr(buf, src_word.length());
-      }
-    } else if (OB_FAIL(ObCharset::tolower(collation_type, src_word, dst_str, allocator_))) {
-    }
-    if (OB_SUCC(ret)) {
+    if (OB_FAIL(ObCharset::tolower(
+                    word_meta_.get_collation_type(),
+                    src.get_word().get_string(),
+                    dst_str,
+                    allocator_))) {
+    } else {
       ObFTWord tmp(dst_str.length(), dst_str.ptr(), word_meta_);
       dst = tmp;
     }

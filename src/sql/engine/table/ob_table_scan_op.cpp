@@ -23,6 +23,7 @@
 #include "data_plane/blocksstable/ob_datum_row.h"
 #include "sql/engine/ob_physical_plan.h"
 #include "sql/das/ob_das_attach_define.h"
+#include "sql/das/ob_das_ir_define.h"
 #include "sql/das/ob_das_vec_define.h"
 #include "share/geo/ob_geo_utils.h"
 #include "share/ob_ddl_checksum.h"
@@ -1067,6 +1068,22 @@ int ObTableScanOp::init_table_scan_rtdef()
       }
     }
   }
+  if (OB_SUCC(ret) && nullptr != MY_CTDEF.attach_spec_.attach_ctdef_
+      && DAS_OP_IR_SCAN == MY_CTDEF.attach_spec_.attach_ctdef_->op_type_
+      && limit_param_.is_valid() && nullptr != tsc_rtdef_.attach_rtinfo_
+      && nullptr != tsc_rtdef_.attach_rtinfo_->attach_rtdef_) {
+    // Text retrieval scans do not consume the limit pushed down to the table scan,
+    // because the attach branch below deliberately skips it.  The sparse retrieval
+    // iterators already know how to stop early once they have emitted enough rows
+    // (ob_sparse_daat_iter / ob_sparse_taat_iter), they just never receive the
+    // bound: the only place that reads it is the DAS IR scan rtdef.  Push it here so
+    // a bound without ORDER BY does not score the whole posting list.
+    ObDASIRScanRtDef *ir_rtdef = static_cast<ObDASIRScanRtDef*>(tsc_rtdef_.attach_rtinfo_->attach_rtdef_);
+    ObDASScanRtDef *inv_idx_scan_rtdef = ir_rtdef->get_inv_idx_scan_rtdef();
+    if (nullptr != inv_idx_scan_rtdef) {
+      inv_idx_scan_rtdef->limit_param_ = limit_param_;
+    }
+  }
   return ret;
 }
 
@@ -1114,7 +1131,8 @@ OB_INLINE int ObTableScanOp::init_das_scan_rtdef(const ObDASScanCtDef &das_ctdef
   das_rtdef.scan_allocator_.set_alloc(&ctx_.get_allocator());
   das_rtdef.eval_ctx_ = &get_eval_ctx();
   if (nullptr != tsc_ctdef.attach_spec_.attach_ctdef_) {
-    // disable limit pushdown to das iter for table scan with attached pushdown ops
+    // disable limit pushdown to das iter for table scan with attached pushdown ops.
+    // text retrieval is the exception: its limit is pushed into the IR scan rtdef above.
   } else if ((is_lookup_limit && is_lookup) || (!is_lookup_limit && !is_lookup)) {
     //when is_lookup_limit = true means that the limit param should pushdown to the lookup rtdef
     //so is_lookup = true means that the das_rtdef is the lookup rtdef

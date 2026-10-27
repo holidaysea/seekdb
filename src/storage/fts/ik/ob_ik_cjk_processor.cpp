@@ -38,9 +38,8 @@ int ObIKCJKProcessor::do_process(TokenizeContext &ctx,
 
   if (ObFTCharUtil::CharType::USELESS != type) {
     // handle previous hits_ first and then check from this char
-    for (ObList<ObDATrieHit, ObIAllocator>::iterator iter = hits_.begin();
-         OB_SUCC(ret) && iter != hits_.end();
-         iter++) {
+    ObList<ObDATrieHit, ObIAllocator>::iterator iter = hits_.begin();
+    while (OB_SUCC(ret) && iter != hits_.end()) {
       ObDATrieHit &hit = *iter;
       if (OB_FAIL(dict_main_.match_with_hit({char_len, ch}, hit, hit))) {
       } else if (hit.is_match()) {
@@ -49,13 +48,21 @@ int ObIKCJKProcessor::do_process(TokenizeContext &ctx,
                                   hit.end_pos_ - hit.start_pos_,
                                   hit.char_cnt_,
                                   ObIKTokenType::IK_CHINESE_TOKEN))) {
-        } else if (hit.is_prefix()) {
-          // match will record the start_cursor
+        } else {
+          ++iter;
         }
       } else if (hit.is_prefix()) {
         // nothing
+        ++iter;
       } else if (hit.is_unmatch()) {
-        hits_.erase(hit);
+        // Advance first: erase(iterator) unlinks and frees the node it is given,
+        // which is the node this iteration is standing on. The old erase(hit)
+        // walked the list from begin() to find the value first (O(hits) per
+        // expired hit) and then freed the node the for-loop iterator pointed at.
+        ObList<ObDATrieHit, ObIAllocator>::iterator expired = iter;
+        ++iter;
+        if (OB_FAIL(hits_.erase(expired))) {
+        }
       } else {
         ret = OB_UNEXPECT_INTERNAL_ERROR;
       }
