@@ -76,11 +76,12 @@ echo "== build bench =="
   -L"$OUT_DIR" -lseekdb_cuvs_bridge -Wl,-rpath,"$OUT_DIR"
 
 run_case() {
-  local tag=$1 n=$2 dim=$3 data=$4 degree=$5 inter=$6 niter=$7
+  local tag=$1 n=$2 dim=$3 data=$4 degree=$5 inter=$6 niter=$7 algo=${8:-nn_descent}
   local -a args=(--n "$n" --dim "$dim" --tag "$tag" --csv "$CSV" --workdir "$OUT_DIR")
   if [[ -n "$data" ]]; then args+=(--data "$data"); fi
   if [[ "$QUICK" == "1" ]]; then args+=(--no-recall); fi
-  echo "== $tag n=$n dim=$dim degree=$degree intermediate=$inter niter=$niter =="
+  echo "== $tag n=$n dim=$dim algo=$algo degree=$degree intermediate=$inter niter=$niter =="
+  SEEKDB_CUVS_BUILD_ALGO=$algo \
   SEEKDB_CUVS_GRAPH_DEGREE=$degree \
   SEEKDB_CUVS_INTERMEDIATE_DEGREE=$inter \
   SEEKDB_CUVS_NITER=$niter \
@@ -95,6 +96,16 @@ run_case "sift_128_192_100"        "$N" 128 "$SIFT_DATA"   128 192 100
 run_case "sift_128_128_100"        "$N" 128 "$SIFT_DATA"   128 128 100
 run_case "sift_128_256_20"         "$N" 128 "$SIFT_DATA"   128 256  20
 run_case "sift_64_128_100"         "$N" 128 "$SIFT_DATA"    64 128 100
+
+# L0 lever: swap the builder itself.  V5 forces NN_DESCENT, whose per-iteration
+# graph maintenance is host-side; IVF_PQ (the cuVS default) builds the candidate
+# graph through GPU searches instead.  This is the only candidate for >2x, so it
+# is priced first and at several degrees.
+run_case "sift_ivfpq_64_128_100"   "$N" 128 "$SIFT_DATA"    64 128 100 ivf_pq
+run_case "sift_ivfpq_128_192_100"  "$N" 128 "$SIFT_DATA"   128 192 100 ivf_pq
+run_case "sift_auto_128_192_100"   "$N" 128 "$SIFT_DATA"   128 192 100 auto
+run_case "hidden_ivfpq_64_128_100" "$N" 256 "$HIDDEN_DATA"  64 128 100 ivf_pq
+run_case "hidden_ivfpq_128_192_100" "$N" 256 "$HIDDEN_DATA" 128 192 100 ivf_pq
 
 run_case "hidden_base_128_256_100" "$N" 256 "$HIDDEN_DATA" 128 256 100
 run_case "hidden_128_192_100"      "$N" 256 "$HIDDEN_DATA" 128 192 100

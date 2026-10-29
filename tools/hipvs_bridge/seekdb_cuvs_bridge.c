@@ -10,6 +10,7 @@
 #endif
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 /* ------------------------------------------------------------------------- *
@@ -67,6 +68,34 @@ typedef struct {
   long n, dim;
 } sk_cuvs_index;
 
+/* Build-algorithm selector.  V5 hard-codes NN_DESCENT, whose per-iteration graph
+ * maintenance runs on the host (see detail/nn_descent.cuh: graph_.update_graph /
+ * add_reverse_edges under OpenMP).  IVF_PQ is the cuVS *default* and builds the
+ * intermediate graph through GPU searches instead, so it is the only knob that
+ * can plausibly move the 23-30 s window by more than 2x.  Default stays
+ * nn_descent: not setting this variable is byte-identical to V5. */
+static const char* sk_algo_name(enum cuvsCagraGraphBuildAlgo algo)
+{
+  switch (algo) {
+    case IVF_PQ:      return "ivf_pq";
+    case AUTO_SELECT: return "auto";
+    case NN_DESCENT:  return "nn_descent";
+    default:          return "other";
+  }
+}
+
+static enum cuvsCagraGraphBuildAlgo sk_env_build_algo(void)
+{
+  const char* raw = getenv("SEEKDB_CUVS_BUILD_ALGO");
+  if (raw == NULL || *raw == '\0') { return NN_DESCENT; }
+  if (strcmp(raw, "nn_descent") == 0 || strcmp(raw, "nnd") == 0) { return NN_DESCENT; }
+  if (strcmp(raw, "ivf_pq") == 0 || strcmp(raw, "ivfpq") == 0) { return IVF_PQ; }
+  if (strcmp(raw, "auto") == 0) { return AUTO_SELECT; }
+  fprintf(stderr, "[seekdb_cuvs] ignoring SEEKDB_CUVS_BUILD_ALGO=%s "
+                  "(expected nn_descent|ivf_pq|auto)\n", raw);
+  return NN_DESCENT;
+}
+
 void* seekdb_cuvs_build(const float* base, long n, long dim)
 {
   sk_cuvs_index* h = (sk_cuvs_index*)calloc(1, sizeof(*h));
@@ -85,10 +114,11 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   long intermediate = sk_env_long("SEEKDB_CUVS_INTERMEDIATE_DEGREE",
                                   SK_DEF_INTERMEDIATE_DEGREE, 16, 1024);
   long niter = sk_env_long("SEEKDB_CUVS_NITER", SK_DEF_NITER, 1, 1000);
+  const enum cuvsCagraGraphBuildAlgo algo = sk_env_build_algo();
   /* cuVS recommends intermediate >= 1.5 * graph_degree; a smaller value only
    * starves the pruning pass, so clamp instead of trusting a typo. */
   if (intermediate < graph_degree) { intermediate = graph_degree * 3 / 2; }
-  h->ip->build_algo = NN_DESCENT;
+  h->ip->build_algo = algo;
   h->ip->graph_degree = (size_t)graph_degree;
   h->ip->intermediate_graph_degree = (size_t)intermediate;
   h->ip->nn_descent_niter = (size_t)niter;
@@ -97,9 +127,10 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
     const double build_t0 = sk_now_us();
     if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_idx;
     if (sk_trace_enabled()) {
-      fprintf(stderr, "[seekdb_cuvs] build n=%ld dim=%ld degree=%ld intermediate=%ld "
+      fprintf(stderr, "[seekdb_cuvs] build n=%ld dim=%ld algo=%s degree=%ld intermediate=%ld "
                       "niter=%ld us=%.0f\n",
-              n, dim, graph_degree, intermediate, niter, sk_now_us() - build_t0);
+              n, dim, sk_algo_name(algo), graph_degree, intermediate, niter,
+              sk_now_us() - build_t0);
     }
   }
   h->n = n; h->dim = dim;
