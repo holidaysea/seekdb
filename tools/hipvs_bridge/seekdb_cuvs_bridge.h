@@ -25,6 +25,11 @@ int   seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
 void  seekdb_cuvs_free(void* handle);
 int seekdb_cuvs_serialize(void* handle, const char* filename);
 void* seekdb_cuvs_deserialize(const char* filename, long n, long dim);
+
+/* Benchmark-only (not used by seekdb): price the dataset half of a snapshot.
+ * include_dataset=0 writes the graph alone; such a file is not loadable by
+ * seekdb_cuvs_deserialize until the dataset is re-attached. */
+int seekdb_cuvs_bench_serialize(void* handle, const char* filename, int include_dataset);
 #ifdef __cplusplus
 }
 #endif
