@@ -26,6 +26,11 @@ void  seekdb_cuvs_free(void* handle);
 int seekdb_cuvs_serialize(void* handle, const char* filename);
 void* seekdb_cuvs_deserialize(const char* filename, long n, long dim);
 
+/* Copy the dataset the GPU index holds back to host memory (n x dim f32).
+ * Used after a reload so the adaptor does not have to keep a second copy of the
+ * vectors inside the snapshot stream. Returns 0 on success. */
+int seekdb_cuvs_export_dataset(void* handle, float* host_buf, long* out_n, long* out_dim);
+
 /* Benchmark-only (not used by seekdb): price the dataset half of a snapshot.
  * include_dataset=0 writes the graph alone; such a file is not loadable by
  * seekdb_cuvs_deserialize until the dataset is re-attached. */

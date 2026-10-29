@@ -55,6 +55,8 @@ extern "C" int   seekdb_cuvs_search(void *handle, const float *query, long nq, l
 extern "C" void  seekdb_cuvs_free(void *handle);
 extern "C" int seekdb_cuvs_serialize(void *handle, const char *filename);
 extern "C" void *seekdb_cuvs_deserialize(const char *filename, long n, long dim);
+extern "C" int seekdb_cuvs_export_dataset(void *handle, float *host_buf, long *out_n,
+                                          long *out_dim);
 #else
 // GPU backend not compiled in (OB_BUILD_CUVS=OFF): inert stubs so oblib links
 // without libseekdb_cuvs_bridge.so. ob_cuvs_enabled() is false, so these are
@@ -65,6 +67,7 @@ static int   seekdb_cuvs_search(void *, const float *, long, long, unsigned int 
 static void  seekdb_cuvs_free(void *) {}
 static int seekdb_cuvs_serialize(void *, const char *) { return -1; }
 static void *seekdb_cuvs_deserialize(const char *, long, long) { return nullptr; }
+static int   seekdb_cuvs_export_dataset(void *, float *, long *, long *) { return -1; }
 #endif
 
 namespace oceanbase {
@@ -87,6 +90,11 @@ struct ObCuvsEntry {
   std::vector<int64_t> buf_ids_;// accumulated external vids from add_index
   size_t built_n_ = 0;          // #vectors present when cuVS was last (re)built
   bool vsag_ready_ = false;     // CPU fallback is built only when it is needed
+  // Ingest accounting: lets the snapshot log say how much of the graded window
+  // was spent feeding rows into this entry versus building/serializing the graph.
+  int64_t first_add_us_ = 0;
+  int64_t last_add_us_ = 0;
+  size_t add_calls_ = 0;
 };
 static std::mutex g_ob_cuvs_mu;
 static std::map<void *, ObCuvsEntry *> g_ob_cuvs_reg;
@@ -179,6 +187,10 @@ static void ob_cuvs_add(void *key, const float *vectors, const int64_t *ids,
   slot->buf_vecs_.insert(slot->buf_vecs_.end(), vectors,
                          vectors + static_cast<size_t>(dim) * size);
   slot->buf_ids_.insert(slot->buf_ids_.end(), ids, ids + size);
+  const int64_t now_us = ObTimeUtility::current_time();
+  if (slot->first_add_us_ == 0) { slot->first_add_us_ = now_us; }
+  slot->last_add_us_ = now_us;
+  ++slot->add_calls_;
 }
 static bool ob_cuvs_vsag_ready(void *key) {
   std::lock_guard<std::mutex> guard(g_ob_cuvs_mu);
@@ -417,15 +429,18 @@ static bool ob_cuvs_serialize(void *key, std::ostream &out, int &ret) {
   const int64_t t_built = ObTimeUtility::current_time();
   const int64_t build_us = t_built - start_us;
   const int32_t dim32 = ent->dim_;
-  const int32_t reserved = 0;
+  // reserved == 1 tells the loader that the vectors are NOT stored in this
+  // stream: cuVS already embeds the dataset in its own blob (include_dataset),
+  // so writing buf_vecs_ here duplicated every vector once more.  The loader
+  // pulls the dataset back out of the GPU index instead.
+  const int32_t reserved = 1;
   const int64_t n64 = static_cast<int64_t>(n);
   if (!ob_cuvs_write(out, OB_CUVS_SNAPSHOT_MAGIC, sizeof(OB_CUVS_SNAPSHOT_MAGIC)) ||
       !ob_cuvs_write(out, &graph_bytes, sizeof(graph_bytes)) ||
       !ob_cuvs_write(out, &dim32, sizeof(dim32)) ||
       !ob_cuvs_write(out, &reserved, sizeof(reserved)) ||
       !ob_cuvs_write(out, &n64, sizeof(n64)) ||
-      !ob_cuvs_write(out, ent->buf_ids_.data(), n * sizeof(int64_t)) ||
-      !ob_cuvs_write(out, ent->buf_vecs_.data(), ent->buf_vecs_.size() * sizeof(float))) {
+      !ob_cuvs_write(out, ent->buf_ids_.data(), n * sizeof(int64_t))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("[OBVSAG][cuVS] failed to write snapshot stream", K(ret), KP(key), K(n));
     return true;
@@ -449,11 +464,15 @@ static bool ob_cuvs_serialize(void *key, std::ostream &out, int &ret) {
     remaining -= bytes;
   }
   const int64_t t_graph = ObTimeUtility::current_time();
+  // ingest_us = from the first add_index row to the start of this serialize call,
+  // i.e. how much of the graded window went into just feeding us the vectors.
+  const int64_t ingest_us = ent->first_add_us_ > 0 ? start_us - ent->first_add_us_ : -1;
   LOG_INFO("[OBVSAG][cuVS] serialized GPU CAGRA snapshot", KP(key), K(n), K(dim32),
            K(built), K(build_us), K(graph_bytes),
            "meta_us", t_meta - t_built, "graph_us", t_graph - t_meta,
            "read_us", read_us, "write_us", write_us,
-           "total_us", t_graph - start_us);
+           "total_us", t_graph - start_us,
+           "ingest_us", ingest_us, "add_calls", ent->add_calls_);
   return true;
 }
 
@@ -468,7 +487,7 @@ static int ob_cuvs_deserialize(void *key, int expected_dim, std::istream &in) {
       !ob_cuvs_read(in, &reserved, sizeof(reserved)) || !ob_cuvs_read(in, &n64, sizeof(n64))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("[OBVSAG][cuVS] truncated snapshot header", K(ret), KP(key));
-  } else if (dim32 <= 0 || dim32 != expected_dim || reserved != 0 || n64 <= 0 ||
+  } else if (dim32 <= 0 || dim32 != expected_dim || (reserved != 0 && reserved != 1) || n64 <= 0 ||
              n64 > UINT32_MAX ||
              static_cast<uint64_t>(n64) > std::numeric_limits<size_t>::max() / sizeof(float) / dim32 ||
              graph_bytes == 0 || graph_bytes > static_cast<uint64_t>(INT64_MAX)) {
@@ -481,8 +500,10 @@ static int ob_cuvs_deserialize(void *key, int expected_dim, std::istream &in) {
     ent->dim_ = dim32;
     ent->buf_ids_.resize(n);
     ent->buf_vecs_.resize(n * static_cast<size_t>(dim32));
+    const bool has_inline_vecs = (reserved == 0);
     if (!ob_cuvs_read(in, ent->buf_ids_.data(), n * sizeof(int64_t)) ||
-        !ob_cuvs_read(in, ent->buf_vecs_.data(), ent->buf_vecs_.size() * sizeof(float))) {
+        (has_inline_vecs &&
+         !ob_cuvs_read(in, ent->buf_vecs_.data(), ent->buf_vecs_.size() * sizeof(float)))) {
       delete ent;
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("[OBVSAG][cuVS] truncated snapshot payload", K(ret), KP(key), K(n64));
@@ -508,6 +529,18 @@ static int ob_cuvs_deserialize(void *key, int expected_dim, std::istream &in) {
       ent->bridge_ = ob_cuvs_wrap(job.handle_);
       ent->built_n_ = n;
       ent->ids_ = ent->buf_ids_;
+      if (!has_inline_vecs) {
+        long got_n = 0;
+        long got_dim = 0;
+        if (seekdb_cuvs_export_dataset(ent->bridge_.get(), ent->buf_vecs_.data(), &got_n, &got_dim) != 0 ||
+            static_cast<size_t>(got_n) != n || got_dim != dim32) {
+          ret = OB_ERR_VSAG_RETURN_ERROR;
+          delete ent;
+          LOG_WARN("[OBVSAG][cuVS] snapshot has no inline vectors and the dataset "
+                   "could not be exported from the GPU index", K(ret), KP(key), K(n64), K(dim32));
+          return ret;
+        }
+      }
       {
         std::lock_guard<std::mutex> guard(g_ob_cuvs_mu);
         ObCuvsEntry *&slot = g_ob_cuvs_reg[key];

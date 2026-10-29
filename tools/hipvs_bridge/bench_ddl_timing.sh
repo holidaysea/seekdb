@@ -97,14 +97,25 @@ rm -f "$LOG" "$TRACE" "$ROWS"
 now_ns() { date +%s%N; }
 log_lines() { if [[ -f "$LOG" ]]; then wc -l < "$LOG" | tr -d ' '; else echo 0; fi; }
 
-extract_us() { # $1 = stage marker ("build n=" / "serialize n="), $2 = log offset
-  tail -n +"$2" "$LOG" 2>/dev/null \
+# seekdb redirects its own stdout/stderr into $RUN_DIR/log/seekdb.log once it has
+# switched to the base dir, so the bridge trace lines land there and not in
+# $LOG (which only keeps the pre-init banner).  Everything below scans both.
+OBLOG=${OBLOG:-}
+ob_lines() { if [[ -n "$OBLOG" && -f "$OBLOG" ]]; then wc -l < "$OBLOG" | tr -d ' '; else echo 0; fi; }
+
+stage_lines() { # $2/$3 = line offsets to skip in $LOG / $OBLOG
+  tail -n +"${2:-1}" "$LOG" 2>/dev/null || true
+  if [[ -n "$OBLOG" ]]; then tail -n +"${3:-1}" "$OBLOG" 2>/dev/null || true; fi
+}
+
+extract_us() { # $1 = stage marker ("build n=" / "serialize n="), $2/$3 = offsets
+  stage_lines "$@" \
     | sed -n "s/.*\[seekdb_cuvs\] $1.*us=\([0-9][0-9]*\).*/\1/p" \
     | tail -1
 }
 
-extract_count() { # $1 = stage marker, $2 = log offset -> how many such stages ran
-  tail -n +"$2" "$LOG" 2>/dev/null \
+extract_count() { # $1 = stage marker, $2/$3 = offsets -> how many such stages ran
+  stage_lines "$@" \
     | sed -n "s/.*\[seekdb_cuvs\] $1.*us=\([0-9][0-9]*\).*/\1/p" \
     | wc -l | tr -d ' '
 }
@@ -225,6 +236,10 @@ for _ in $(seq 1 180); do
 done
 [[ "$ready" == "1" ]] || { echo "observer did not become ready, see $LOG" >&2; exit 1; }
 
+# the bridge trace lines end up here once seekdb has switched to the base dir
+OBLOG="$RUN_DIR/log/seekdb.log"
+export OBLOG
+
 mysql_cmd -e 'create database if not exists cagra_bench' >/dev/null
 
 if [[ "$LOAD" == "1" ]]; then
@@ -269,6 +284,7 @@ for run in $(seq 1 "$RUNS"); do
   mysql_cmd -e "alter table cagra_bench.$TABLE drop index $IDX" >/dev/null 2>&1 || true
   sleep 1
   offset=$(log_lines)
+  ob_offset=$(ob_lines)
   start=$(now_ns)
   if ! mysql_cmd -e "$DDL" >>"$EVIDENCE/ddl-$run.log" 2>&1; then
     echo "DDL failed on run $run, see $EVIDENCE/ddl-$run.log" >&2
@@ -284,9 +300,9 @@ for run in $(seq 1 "$RUNS"); do
   mysql_cmd -e "$Q_SQL" >/dev/null 2>&1 || true
   q2_stop=$(now_ns)
 
-  build_us=$(extract_us 'build n=' "$offset")
-  snap_us=$(extract_us 'serialize n=' "$offset")
-  build_cnt=$(extract_count 'build n=' "$offset")
+  build_us=$(extract_us 'build n=' "$offset" "$ob_offset")
+  snap_us=$(extract_us 'serialize n=' "$offset" "$ob_offset")
+  build_cnt=$(extract_count 'build n=' "$offset" "$ob_offset")
   build_ms=$(ms "${build_us:-0}")
   snap_ms=$(ms "${snap_us:-0}")
   ddl_ms=$(ms $(( (stop - start) / 1000 )))

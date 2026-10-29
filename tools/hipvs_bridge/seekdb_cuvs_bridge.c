@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 /* ------------------------------------------------------------------------- *
  * Build/search knobs.
@@ -37,9 +38,9 @@
  * headroom: at dim 256 the 144 setting loses ~0.006 recall against the
  * reference build, which is the maximum the rules allow.
  * ------------------------------------------------------------------------- */
-#define SK_DEF_GRAPH_DEGREE        128
+#define SK_DEF_GRAPH_DEGREE      192
 #define SK_DEF_INTERMEDIATE_DEGREE 192
-#define SK_DEF_NITER               60
+#define SK_DEF_NITER              40
 
 /* ------------------------------------------------------------------------- *
  * Host thread count for the build.
@@ -56,6 +57,7 @@
  * forced with SEEKDB_CUVS_OMP_THREADS.
  * ------------------------------------------------------------------------- */
 #define SK_DEF_OMP_THREADS         12
+#define SK_MAX_OMP_THREADS         16
 
 static int sk_trace_enabled(void)
 {
@@ -109,6 +111,52 @@ static void sk_apply_search_params(cuvsCagraSearchParams_t sp, long topk)
   sp->search_width = (uint32_t)width;
 }
 
+/* Effective CPU budget: the smaller of the online processor count and the
+ * cgroup CPU quota (v2 cpu.max / v1 cfs_quota_us).  Container CPUs are often
+ * far fewer than nproc, and a thread pool sized from nproc then oversubscribes
+ * that budget badly: on a 128-CPU host limited to 16 CPUs, letting OpenMP use
+ * 128 threads made the host-side NN-descent build 4-5x slower than 12 threads,
+ * with identical recall. */
+static long sk_effective_cpus(void)
+{
+  long n = 0;
+  long quota = 0;
+  FILE* f = NULL;
+#ifdef _SC_NPROCESSORS_ONLN
+  n = sysconf(_SC_NPROCESSORS_ONLN);
+#endif
+  if (n <= 0) n = 1;
+  f = fopen("/sys/fs/cgroup/cpu.max", "r");
+  if (f != NULL) {
+    char q[32];
+    long period = 0;
+    q[0] = '\0';
+    if (fscanf(f, "%31s %ld", q, &period) == 2 && period > 0 && strcmp(q, "max") != 0) {
+      long v = strtol(q, NULL, 10);
+      if (v > 0) quota = (v + period - 1) / period;
+    }
+    fclose(f);
+  }
+  if (quota <= 0) {
+    f = fopen("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", "r");
+    if (f != NULL) {
+      long v = 0;
+      if (fscanf(f, "%ld", &v) == 1 && v > 0) {
+        long period = 100000;
+        FILE* p = fopen("/sys/fs/cgroup/cpu/cpu.cfs_period_us", "r");
+        if (p != NULL) {
+          if (fscanf(p, "%ld", &period) != 1 || period <= 0) period = 100000;
+          fclose(p);
+        }
+        quota = (v + period - 1) / period;
+      }
+      fclose(f);
+    }
+  }
+  if (quota > 0 && quota < n) n = quota;
+  return n;
+}
+
 /* Runs when this library is dlopen'd, i.e. before the first cuVS build has
  * started any OpenMP region, so the runtime still honours the environment. */
 __attribute__((constructor)) static void sk_limit_omp_threads(void)
@@ -123,6 +171,7 @@ __attribute__((constructor)) static void sk_limit_omp_threads(void)
     }
     return;
   }
+  want = sk_effective_cpus();
   if (raw != NULL && *raw != '\0') {
     char* end = NULL;
     long parsed = strtol(raw, &end, 10);
@@ -132,7 +181,10 @@ __attribute__((constructor)) static void sk_limit_omp_threads(void)
       fprintf(stderr, "[seekdb_cuvs] ignoring SEEKDB_CUVS_OMP_THREADS=%s "
                       "(expected 1..512)\n", raw);
     }
+  } else if (want > SK_MAX_OMP_THREADS) {
+    want = SK_MAX_OMP_THREADS;
   }
+  if (want < 1) want = 1;
   snprintf(buf, sizeof(buf), "%ld", want);
   setenv("OMP_NUM_THREADS", buf, 1);
   if (sk_trace_enabled()) {
@@ -170,6 +222,7 @@ static const char* sk_algo_name(enum cuvsCagraGraphBuildAlgo algo)
     case IVF_PQ:      return "ivf_pq";
     case AUTO_SELECT: return "auto";
     case NN_DESCENT:  return "nn_descent";
+    case ITERATIVE_CAGRA_SEARCH: return "iterative";
     default:          return "other";
   }
 }
@@ -180,9 +233,11 @@ static enum cuvsCagraGraphBuildAlgo sk_env_build_algo(void)
   if (raw == NULL || *raw == '\0') { return NN_DESCENT; }
   if (strcmp(raw, "nn_descent") == 0 || strcmp(raw, "nnd") == 0) { return NN_DESCENT; }
   if (strcmp(raw, "ivf_pq") == 0 || strcmp(raw, "ivfpq") == 0) { return IVF_PQ; }
+  if (strcmp(raw, "iterative") == 0 || strcmp(raw, "iter") == 0
+      || strcmp(raw, "ics") == 0) { return ITERATIVE_CAGRA_SEARCH; }
   if (strcmp(raw, "auto") == 0) { return AUTO_SELECT; }
   fprintf(stderr, "[seekdb_cuvs] ignoring SEEKDB_CUVS_BUILD_ALGO=%s "
-                  "(expected nn_descent|ivf_pq|auto)\n", raw);
+                  "(expected nn_descent|ivf_pq|iterative|auto)\n", raw);
   return NN_DESCENT;
 }
 
@@ -212,6 +267,15 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   h->ip->graph_degree = (size_t)graph_degree;
   h->ip->intermediate_graph_degree = (size_t)intermediate;
   h->ip->nn_descent_niter = (size_t)niter;
+  /* IVF_PQ build: refinement_rate trades graph quality for build time.  The C
+   * API default is 1 (no refinement pass); raising it improves recall of the
+   * kNN graph at a higher build cost.  Ignored by the other build algorithms. */
+  if (algo == IVF_PQ && h->ip->graph_build_params != NULL) {
+    long refine = sk_env_long("SEEKDB_CUVS_REFINEMENT_RATE", -1, -1, 64);
+    if (refine >= 0) {
+      h->ip->graph_build_params->refinement_rate = (float)refine;
+    }
+  }
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   {
     const double build_t0 = sk_now_us();
@@ -406,6 +470,9 @@ void* seekdb_cuvs_deserialize(const char* filename, long n, long dim)
   }
   index->n = n;
   index->dim = dim;
+  /* A reloaded handle must honour the same search-path knobs as a freshly built
+   * one; this used to be set only at the end of build. */
+  index->fast = (int)sk_env_long("SEEKDB_CUVS_SEARCH_FAST", 0, 0, 1);
   if (sk_trace_enabled()) {
     fprintf(stderr, "[seekdb_cuvs] deserialize n=%ld dim=%ld us=%.0f\n",
             n, dim, sk_now_us() - load_t0);
@@ -421,6 +488,36 @@ fail:
   fprintf(stderr, "[seekdb_cuvs] deserialize failed: %s\n", cuvsGetLastErrorText());
   free(index);
   return NULL;
+}
+
+int seekdb_cuvs_export_dataset(void* handle, float* host_buf, long* out_n, long* out_dim)
+{
+  sk_cuvs_index* h = (sk_cuvs_index*)handle;
+  if (!h || !host_buf) return 1;
+  DLManagedTensor ds;
+  memset(&ds, 0, sizeof(ds));
+  if (cuvsCagraIndexGetDataset(h->idx, &ds) != CUVS_SUCCESS) {
+    fprintf(stderr, "[seekdb_cuvs] get_dataset failed: %s\n", cuvsGetLastErrorText());
+    return 2;
+  }
+  if (ds.dl_tensor.ndim != 2 || ds.dl_tensor.data == NULL || ds.dl_tensor.shape == NULL) {
+    return 3;
+  }
+  const long n = (long)ds.dl_tensor.shape[0];
+  const long d = (long)ds.dl_tensor.shape[1];
+  if (n != h->n || d != h->dim) {
+    fprintf(stderr, "[seekdb_cuvs] export shape mismatch: %ld x %ld, expected %ld x %ld\n",
+            n, d, h->n, h->dim);
+    return 4;
+  }
+  if (cudaMemcpy(host_buf, ds.dl_tensor.data, (size_t)n * (size_t)d * sizeof(float),
+                 cudaMemcpyDeviceToHost) != cudaSuccess) {
+    fprintf(stderr, "[seekdb_cuvs] export dataset copy failed\n");
+    return 5;
+  }
+  if (out_n) *out_n = n;
+  if (out_dim) *out_dim = d;
+  return 0;
 }
 
 int seekdb_cuvs_cagra_knn(const float* base, long n, long dim,
