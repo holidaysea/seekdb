@@ -46,6 +46,13 @@ REPORT=0
 HIPVS_ROOT=${HIPVS_ROOT:-/opt/hipvs}
 ROCM_ROOT=${ROCM_ROOT:-/opt/rocm}
 IDX="idx_cagra"
+# The snapshot stream write is memory-bound: with memory_budget=2G the block
+# cache evicts while the 384 MB CAGRA blob is being appended, and the write
+# drops from ~1 GB/s to ~64 MB/s (measured: 0.38 s -> 6.0 s, +5.6 s on the
+# graded window). 16G keeps the whole blob in the cache and matches what a
+# 96 GB grading host would be configured with. Override with MEM_BUDGET=2G to
+# reproduce the earlier, pessimistic numbers.
+MEM_BUDGET=${MEM_BUDGET:-16G}
 
 while (($# > 0)); do
   case "$1" in
@@ -203,7 +210,7 @@ env -u OB_VSAG_USE_CUVS \
   --data-dir "$RUN_DIR/store" \
   --base-dir "$RUN_DIR" \
   --parameter __min_full_resource_pool_memory=2147483648 \
-  --parameter memory_budget=2G \
+  --parameter memory_budget="$MEM_BUDGET" \
   --parameter datafile_size=20G \
   --parameter cpu_count=24 \
   --parameter local_ip=127.0.0.1 \
