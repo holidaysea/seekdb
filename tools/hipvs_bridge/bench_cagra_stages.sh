@@ -76,12 +76,13 @@ echo "== build bench =="
   -L"$OUT_DIR" -lseekdb_cuvs_bridge -Wl,-rpath,"$OUT_DIR"
 
 run_case() {
-  local tag=$1 n=$2 dim=$3 data=$4 degree=$5 inter=$6 niter=$7 algo=${8:-nn_descent}
+  local tag=$1 n=$2 dim=$3 data=$4 degree=$5 inter=$6 niter=$7 algo=${8:-nn_descent} fast=${9:-0}
   local -a args=(--n "$n" --dim "$dim" --tag "$tag" --csv "$CSV" --workdir "$OUT_DIR")
   if [[ -n "$data" ]]; then args+=(--data "$data"); fi
   if [[ "$QUICK" == "1" ]]; then args+=(--no-recall); fi
-  echo "== $tag n=$n dim=$dim algo=$algo degree=$degree intermediate=$inter niter=$niter =="
+  echo "== $tag n=$n dim=$dim algo=$algo degree=$degree intermediate=$inter niter=$niter fast=$fast =="
   SEEKDB_CUVS_BUILD_ALGO=$algo \
+  SEEKDB_CUVS_SEARCH_FAST=$fast \
   SEEKDB_CUVS_GRAPH_DEGREE=$degree \
   SEEKDB_CUVS_INTERMEDIATE_DEGREE=$inter \
   SEEKDB_CUVS_NITER=$niter \
@@ -113,6 +114,16 @@ run_case "hidden_128_256_20"       "$N" 256 "$HIDDEN_DATA" 128 256  20
 # Hidden carries 0.6 of the weighted score, so the L1 lever has to be priced here too.
 run_case "hidden_64_192_100"       "$N" 256 "$HIDDEN_DATA"  64 192 100
 run_case "hidden_64_128_100"       "$N" 256 "$HIDDEN_DATA"  64 128 100
+
+# L5 query fast path: identical graph, only the per-query device scratch and the
+# search-params object are reused.  The pair below isolates the win (and proves
+# it is not a recall trade, since the index is the same).
+echo
+echo "== L5 query fast path (same graph, scratch+params reuse) =="
+run_case "sift_l5_off"             "$N" 128 "$SIFT_DATA"   128 192 100 nn_descent 0
+run_case "sift_l5_on"              "$N" 128 "$SIFT_DATA"   128 192 100 nn_descent 1
+run_case "hidden_l5_off"           "$N" 256 "$HIDDEN_DATA" 128 192 100 nn_descent 0
+run_case "hidden_l5_on"            "$N" 256 "$HIDDEN_DATA" 128 192 100 nn_descent 1
 
 echo
 echo "== stage table =="
