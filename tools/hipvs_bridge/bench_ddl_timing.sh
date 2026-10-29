@@ -252,7 +252,7 @@ fi
 QUERY=$(mysql_cmd -e "select v from cagra_bench.$TABLE order by id limit 1" 2>/dev/null || true)
 [[ -n "$QUERY" ]] || { echo "cannot build a probe query" >&2; exit 2; }
 
-DDL="alter table cagra_bench.$TABLE add vector index $IDX(v) with (distance=l2,type=hnsw,lib=cuvs,m=16,ef_construction=200,ef_search=64)"
+DDL="create vector index $IDX on cagra_bench.$TABLE(v) with (distance=l2,type=hnsw,lib=cuvs,m=16,ef_construction=200,ef_search=64)"
 Q_SQL="select id from cagra_bench.$TABLE order by l2_distance(v, '$QUERY') approximate limit 10"
 
 ms() { echo $(( $1 / 1000 )); } # us -> ms
@@ -282,10 +282,10 @@ for run in $(seq 1 "$RUNS"); do
   build_cnt=$(extract_count 'build n=' "$offset")
   build_ms=$(ms "${build_us:-0}")
   snap_ms=$(ms "${snap_us:-0}")
-  ddl_ms=$(ms $(( stop - start )))
+  ddl_ms=$(ms $(( (stop - start) / 1000 )))
   other_ms=$(( ddl_ms - build_ms - snap_ms ))
-  q1_ms=$(ms $(( q1_stop - q1_start )))
-  q2_ms=$(ms $(( q2_stop - q2_start )))
+  q1_ms=$(ms $(( (q1_stop - q1_start) / 1000 )))
+  q2_ms=$(ms $(( (q2_stop - q2_start) / 1000 )))
 
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$run" "$ddl_ms" "$build_ms" "$snap_ms" "$other_ms" "$q1_ms" "$q2_ms" "$build_cnt" >> "$ROWS"
