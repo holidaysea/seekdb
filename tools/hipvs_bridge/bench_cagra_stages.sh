@@ -98,6 +98,22 @@ run_case "sift_128_128_100"        "$N" 128 "$SIFT_DATA"   128 128 100
 run_case "sift_128_256_20"         "$N" 128 "$SIFT_DATA"   128 256  20
 run_case "sift_64_128_100"         "$N" 128 "$SIFT_DATA"    64 128 100
 
+# niter sweep — the cheapest decisive experiment in the whole matrix.
+#
+# V5 forces nn_descent_niter=100.  The early-stop test in nn_descent.cuh is
+#   update_counter_ < 1e-4 * n * dim / 100        (== 32 for SIFT 250Kx128)
+# and update_counter_ only counts insertions on every 100th row, up to
+# (n/100)*width per round.  So 32 is either "one round from converged" (early
+# stop never fires, niter=100 really costs 100 rounds => 5x over niter=20) or
+# "most rounds already idle" (stop fires at ~5-15 rounds => niter is free).
+# Nobody knows which.  T(scaling) answers it in one run:
+#   T(20)~=T(100)  -> converged early, niter is not a lever
+#   T ~ proportional -> niter is the single biggest untouched knob
+run_case "sift_niter_100"          "$N" 128 "$SIFT_DATA"   128 256 100
+run_case "sift_niter_50"           "$N" 128 "$SIFT_DATA"   128 256  50
+run_case "sift_niter_20"           "$N" 128 "$SIFT_DATA"   128 256  20
+run_case "sift_niter_10"           "$N" 128 "$SIFT_DATA"   128 256  10
+
 # L0 lever: swap the builder itself.  V5 forces NN_DESCENT, whose per-iteration
 # graph maintenance is host-side; IVF_PQ (the cuVS default) builds the candidate
 # graph through GPU searches instead.  This is the only candidate for >2x, so it
@@ -114,6 +130,13 @@ run_case "hidden_128_256_20"       "$N" 256 "$HIDDEN_DATA" 128 256  20
 # Hidden carries 0.6 of the weighted score, so the L1 lever has to be priced here too.
 run_case "hidden_64_192_100"       "$N" 256 "$HIDDEN_DATA"  64 192 100
 run_case "hidden_64_128_100"       "$N" 256 "$HIDDEN_DATA"  64 128 100
+
+# Same niter sweep on Hidden (0.6 of the weighted score, dim=256 => the early-stop
+# threshold doubles to 64, so the two datasets can land on different sides).
+run_case "hidden_niter_100"        "$N" 256 "$HIDDEN_DATA" 128 256 100
+run_case "hidden_niter_50"         "$N" 256 "$HIDDEN_DATA" 128 256  50
+run_case "hidden_niter_20"         "$N" 256 "$HIDDEN_DATA" 128 256  20
+run_case "hidden_niter_10"         "$N" 256 "$HIDDEN_DATA" 128 256  10
 
 # L5 query fast path: identical graph, only the per-query device scratch and the
 # search-params object are reused.  The pair below isolates the win (and proves

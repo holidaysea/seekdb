@@ -741,11 +741,33 @@ int HnswIndexHandler::add_index(const vsag::DatasetPtr &incremental)
   return ret;
 }
 
+// GPU-path guard.
+//
+// A lib=cuvs index is allowed to fall back to VSAG only for *semantic* reasons
+// (filter / delete / stale graph). Falling back because the GPU is unusable is
+// a different animal: the DDL and the queries still succeed, so everything looks
+// healthy while the contest's gpu_path hard gate is failing — and that gate is
+// worth the whole 20 points. SEEKDB_CUVS_REQUIRE_GPU=1 turns that silent
+// degradation into an immediate error so a smoke run cannot lie to us.
+static bool ob_cuvs_require_gpu()
+{
+  static const bool required = []() {
+    const char *v = ::getenv("SEEKDB_CUVS_REQUIRE_GPU");
+    return v != nullptr && v[0] != '\0' && v[0] != '0';
+  }();
+  return required;
+}
+
 int HnswIndexHandler::ensure_vsag_fallback()
 {
   int ret = OB_SUCCESS;
   if (!ob_cuvs_marked(this) || ob_cuvs_vsag_ready(this)) {
     return ret;
+  }
+  if (ob_cuvs_require_gpu()) {
+    LOG_ERROR("[OBVSAG][cuVS] GPU path unusable, refusing VSAG fallback"
+              " (SEEKDB_CUVS_REQUIRE_GPU=1)", KP(this));
+    return OB_ERR_UNEXPECTED;
   }
   std::lock_guard<std::mutex> fallback_guard(g_ob_cuvs_fallback_mu);
   if (ob_cuvs_vsag_ready(this)) {
@@ -773,6 +795,7 @@ int HnswIndexHandler::ensure_vsag_fallback()
           ->Ids(ids.data())
           ->Float32Vectors(vectors.data())
           ->Owner(false);
+      const int64_t fallback_start_us = ObTimeUtility::current_time();
       if (OB_FAIL(build_index(dataset))) {
       } else {
         std::lock_guard<std::mutex> guard(g_ob_cuvs_mu);
@@ -780,8 +803,12 @@ int HnswIndexHandler::ensure_vsag_fallback()
         if (it != g_ob_cuvs_reg.end()) {
           it->second->vsag_ready_ = true;
         }
-        LOG_INFO("[OBVSAG][cuVS] lazily built VSAG fallback",
-                 KP(this), K(dim), K(ids.size()));
+        // WARN on purpose: when this line lands inside the measured DDL window it
+        // means the window paid for a CPU HNSW build nobody asked for — that is
+        // the "白干的活" this whole report is trying to find, so make it greppable.
+        LOG_WARN("[OBVSAG][cuVS] served by VSAG fallback (CPU), not GPU",
+                 KP(this), K(dim), K(ids.size()),
+                 "cost_us", ObTimeUtility::current_time() - fallback_start_us);
       }
     }
   }
