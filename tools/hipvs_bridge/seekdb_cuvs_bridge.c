@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -134,7 +135,12 @@ static void sk_apply_search_params(cuvsCagraSearchParams_t sp, long topk)
   if (required_itopk < 512) required_itopk = 512;
   itopk = (size_t)sk_env_long("SEEKDB_CUVS_ITOPK", 0, 0, 65536);
   if (itopk < required_itopk) itopk = required_itopk;
-  width = sk_env_long("SEEKDB_CUVS_SEARCH_WIDTH", 4, 1, 64);
+  /* search_width >= 2 makes cuVS keep a persistent ~448 MB workspace on top of
+   * the graph: on the 250K x 256 case a one-client peak of 1060 MB becomes
+   * 1308 MB with eight clients (1.52x the frozen baseline's 861 MB), which trips
+   * the relative_vram_limit gate.  width=1 keeps the peak at the baseline's
+   * 1.07x and still gives 0.97x the baseline throughput, so it is the default. */
+  width = sk_env_long("SEEKDB_CUVS_SEARCH_WIDTH", 1, 1, 64);
   if (sp->itopk_size < itopk) sp->itopk_size = itopk;
   sp->search_width = (uint32_t)width;
 }
@@ -330,6 +336,15 @@ fail_res: cuvsResourcesDestroy(h->res); free(h);
   return NULL;
 }
 
+/* cuVS allocates a per-call search workspace that grows with search_width; with
+ * several OB workers searching at once the device peak scales with the number of
+ * callers (measured: 1 caller 1060 MB, 8 callers 1308 MB on a 250K x 256 index,
+ * while the frozen baseline stays at 861 MB no matter how many clients connect).
+ * The GPU can only run one search at a time anyway, so serialise here: the queue
+ * waits on the host instead of on the device, and the peak stays at the one-caller
+ * value. */
+static pthread_mutex_t sk_search_mu = PTHREAD_MUTEX_INITIALIZER;
+
 int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
                        unsigned int* out_ids, float* out_dist)
 {
@@ -342,6 +357,8 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
   const size_t need_o = sizeof(unsigned) * (size_t)nq * (size_t)topk;
   float* qd = 0; unsigned* nd = 0; float* dd = 0; cuvsCagraSearchParams_t sp = 0;
   double t_alloc_start = search_t0, t_alloc = 0, t_h2d = 0, t_kernel = 0, t_d2h = 0;
+
+  pthread_mutex_lock(&sk_search_mu);
 
   if (fast) {
     /* Optimistic spin: OB serialises queries on g_ob_cuvs_mu, so contention is
@@ -424,6 +441,7 @@ done:
                     "h2d_us=%.1f kernel_us=%.1f d2h_us=%.1f us=%.0f\n",
             nq, topk, fast, t_alloc, t_h2d, t_kernel, t_d2h, sk_now_us() - search_t0);
   }
+  pthread_mutex_unlock(&sk_search_mu);
   return rc;
 }
 
