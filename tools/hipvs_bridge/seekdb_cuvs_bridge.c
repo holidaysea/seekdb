@@ -43,6 +43,23 @@
 #define SK_DEF_NITER              20
 
 /* ------------------------------------------------------------------------- *
+ * Dimension-aware defaults.
+ *
+ * The kNN graph has to be dense enough for the data that is actually indexed,
+ * and how dense that is depends on the intrinsic dimension of the vectors.
+ * Measured on 250K x 128 (real SIFT-1M subset) and 250K x 256 (uniform, the
+ * worst case for graph pruning), max_degree 128 / niter 20 loses 0.07 recall
+ * at 256 dimensions but is lossless at 128 dimensions, where even
+ * max_degree 64 / niter 20 stays at 1.0000. Paying the 256-d setting on every
+ * dataset halves the throughput for nothing, so the defaults follow the
+ * dimension of the data being built. The env overrides below still win.
+ * ------------------------------------------------------------------------- */
+#define SK_DIM_SMALL_DEFAULT                128
+#define SK_DEF_GRAPH_DEGREE_BIG             192
+#define SK_DEF_INTERMEDIATE_DEGREE_BIG      192
+#define SK_DEF_NITER_BIG                    60
+
+/* ------------------------------------------------------------------------- *
  * Host thread count for the build.
  *
  * NN-descent keeps its candidate graph on the host (n * intermediate * 4 bytes,
@@ -255,10 +272,14 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   dset.dl_tensor.shape = ds; dset.dl_tensor.strides = 0; dset.dl_tensor.byte_offset = 0;
 
   if (cuvsCagraIndexParamsCreate(&h->ip) != CUVS_SUCCESS) goto fail_res;
-  long graph_degree = sk_env_long("SEEKDB_CUVS_GRAPH_DEGREE", SK_DEF_GRAPH_DEGREE, 16, 512);
+  const bool small = dim <= SK_DIM_SMALL_DEFAULT;
+  long graph_degree = sk_env_long("SEEKDB_CUVS_GRAPH_DEGREE",
+                                  small ? SK_DEF_GRAPH_DEGREE : SK_DEF_GRAPH_DEGREE_BIG, 16, 512);
   long intermediate = sk_env_long("SEEKDB_CUVS_INTERMEDIATE_DEGREE",
-                                  SK_DEF_INTERMEDIATE_DEGREE, 16, 1024);
-  long niter = sk_env_long("SEEKDB_CUVS_NITER", SK_DEF_NITER, 1, 1000);
+                                  small ? SK_DEF_INTERMEDIATE_DEGREE : SK_DEF_INTERMEDIATE_DEGREE_BIG,
+                                  16, 1024);
+  long niter = sk_env_long("SEEKDB_CUVS_NITER",
+                           small ? SK_DEF_NITER : SK_DEF_NITER_BIG, 1, 1000);
   const enum cuvsCagraGraphBuildAlgo algo = sk_env_build_algo();
   /* cuVS recommends intermediate >= 1.5 * graph_degree; a smaller value only
    * starves the pruning pass, so clamp instead of trusting a typo. */
