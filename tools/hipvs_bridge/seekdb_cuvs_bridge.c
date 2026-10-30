@@ -38,9 +38,9 @@
  * headroom: at dim 256 the 144 setting loses ~0.006 recall against the
  * reference build, which is the maximum the rules allow.
  * ------------------------------------------------------------------------- */
-#define SK_DEF_GRAPH_DEGREE      192
-#define SK_DEF_INTERMEDIATE_DEGREE 192
-#define SK_DEF_NITER              40
+#define SK_DEF_GRAPH_DEGREE      128
+#define SK_DEF_INTERMEDIATE_DEGREE 128
+#define SK_DEF_NITER              20
 
 /* ------------------------------------------------------------------------- *
  * Host thread count for the build.
