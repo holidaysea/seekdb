@@ -151,6 +151,55 @@ s1_report() {
   echo "build_cores / recall / niter scaling -> ./bench_cagra_stages.sh"
 }
 
+# Split other_ms into "before the CAGRA build started" and "after the snapshot
+# write returned", using the observer log's own timestamps. No OB source change
+# and no rebuild: the only timestamped mark we need is the serialized-snapshot
+# line, which also carries total_us.
+phase_report() {
+  [[ -n "$OBLOG" && -f "$OBLOG" && -s "$ROWS" ]] || return 0
+  local marks; marks=$(mktemp)
+  awk '
+    /^\[[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]\./ {
+      if ($0 ~ /serialized GPU CAGRA snapshot/) {
+        ts = substr($0, 2, 26); tu = "";
+        if (match($0, /total_us=[0-9]+/)) tu = substr($0, RSTART + 9, RLENGTH - 9);
+        if (tu != "") print ts "\t" tu;
+      }
+    }' "$OBLOG" > "$marks" 2>/dev/null || true
+  if [[ ! -s "$marks" ]]; then rm -f "$marks"; return 0; fi
+
+  local -a ses=() tus=()
+  local ts tu v
+  while IFS=$'\t' read -r ts tu; do
+    v=$(date -d "$ts" +%s%3N 2>/dev/null) || continue
+    [[ -z "$v" ]] && continue
+    ses+=("$v"); tus+=("$tu")
+  done < "$marks"
+  rm -f "$marks"
+  [[ ${#ses[@]} -eq 0 ]] && return 0
+
+  echo
+  echo "== phase split from the observer log (where other_ms goes) =="
+  printf '%-4s %9s %9s %9s %9s %9s %9s\n' "run" "pre_ms" "build_ms" "snapw_ms" "post_ms" "ddl_ms" "sum_ms"
+  local run ddl build snap other q1 q2 builds t0 t1 i se tot pre post
+  while IFS=$'\t' read -r run ddl build snap other q1 q2 builds t0 t1; do
+    if [[ -z "${t0:-}" || -z "${t1:-}" ]]; then continue; fi
+    se=""; tot=""
+    for i in "${!ses[@]}"; do
+      v=${ses[$i]}
+      if (( v >= t0 && v <= t1 )); then se=$v; tot=${tus[$i]}; break; fi
+    done
+    if [[ -z "$se" ]]; then continue; fi
+    pre=$(( (se - t0) - tot / 1000 ))
+    post=$(( t1 - se ))
+    printf '%-4s %9s %9s %9s %9s %9s %9s\n' "$run" "$pre" "$build" "$(( tot / 1000 - build ))" "$post" "$ddl" "$(( pre + tot / 1000 + post ))"
+  done < "$ROWS"
+  echo
+  echo "pre_ms  = CREATE VECTOR INDEX -> CAGRA build start (plan, task start, aux table, first scan)"
+  echo "snapw_ms= the whole snapshot stage inside cuVS/OB (build excluded)"
+  echo "post_ms = snapshot written -> statement returns (DDL bookkeeping, schema publish)"
+  echo "sum_ms  = pre + build + snapshot + post; should match ddl_ms within a few ms"
+}
 dry_run() {
   echo "== DRY RUN: synthetic observer log, no observer and no mysql involved =="
   echo "   base-dir: $BASE_DIR"
@@ -310,8 +359,13 @@ for run in $(seq 1 "$RUNS"); do
   q1_ms=$(ms $(( (q1_stop - q1_start) / 1000 )))
   q2_ms=$(ms $(( (q2_stop - q2_start) / 1000 )))
 
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$run" "$ddl_ms" "$build_ms" "$snap_ms" "$other_ms" "$q1_ms" "$q2_ms" "$build_cnt" >> "$ROWS"
+  # absolute wall-clock window of this run, so the observer log timestamps can be
+  # bucketed into it afterwards (phase split below)
+  ddl_t0_ms=$(( start / 1000000 ))
+  ddl_t1_ms=$(( stop / 1000000 ))
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$run" "$ddl_ms" "$build_ms" "$snap_ms" "$other_ms" "$q1_ms" "$q2_ms" "$build_cnt" \
+    "$ddl_t0_ms" "$ddl_t1_ms" >> "$ROWS"
   printf 'run=%s ddl=%sms build=%sms(%s builds) snapshot=%sms other=%sms q1=%sms q2=%sms\n' \
     "$run" "$ddl_ms" "$build_ms" "${build_cnt:-0}" "$snap_ms" "$other_ms" "$q1_ms" "$q2_ms"
 done
@@ -338,6 +392,8 @@ else
     }
   ' "$ROWS"
 fi
+
+phase_report
 
 echo
 echo "== cuVS stage lines seen in the observer log =="

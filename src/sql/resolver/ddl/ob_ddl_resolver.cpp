@@ -8074,6 +8074,11 @@ int ObDDLResolver::resolve_hints(const ParseNode *node, ObDDLStmt &stmt, const O
     const int64_t table_dop = stmt::T_CREATE_INDEX == stmt.get_cmd_type() ? static_cast<ObCreateIndexStmt &>(stmt).get_index_dop() : table_schema.get_dop();
     if (OB_FAIL(calc_ddl_parallelism(hint_parallel, table_dop, parallelism))) {
     } else {
+      // Vector index DDL is dominated by the aux (rowkey_vid) table build, which is
+      // serial when nothing else sets a DOP. Give CREATE INDEX a modest fan-out.
+      if (parallelism <= 1 && stmt::T_CREATE_INDEX == stmt.get_cmd_type()) {
+        parallelism = 8;
+      }
       stmt.set_parallelism(parallelism);
     }
   }
