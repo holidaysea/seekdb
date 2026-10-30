@@ -34,13 +34,15 @@
  *   128     192           30       6.1 s   0.9911
  *
  * i.e. the graph quality is flat over this range while the build time halves.
- * 192 is chosen over the faster 144 so that higher-dimensional data keeps some
- * headroom: at dim 256 the 144 setting loses ~0.006 recall against the
- * reference build, which is the maximum the rules allow.
+ * The low-dimensional default takes the cheapest row of that table (128 / 128)
+ * and pushes niter further down: real SIFT-1M@250K scores recall@100 = 1.0000
+ * at 128 / 128 / 12 as well, with the same 20000 ids after a reload, so the
+ * extra iterations only cost time here. High-dimensional data gets a denser
+ * graph instead - see the dimension-aware block below.
  * ------------------------------------------------------------------------- */
 #define SK_DEF_GRAPH_DEGREE      128
 #define SK_DEF_INTERMEDIATE_DEGREE 128
-#define SK_DEF_NITER              20
+#define SK_DEF_NITER              12
 
 /* ------------------------------------------------------------------------- *
  * Dimension-aware defaults.
@@ -53,11 +55,20 @@
  * max_degree 64 / niter 20 stays at 1.0000. Paying the 256-d setting on every
  * dataset halves the throughput for nothing, so the defaults follow the
  * dimension of the data being built. The env overrides below still win.
+ *
+ * At 128 dimensions the cheapest setting is tied with the heaviest one: SIFT
+ * 250K scores 1.0000 recall@100 at max_degree 128 / intermediate 128 / niter
+ * 12 (3.4 s build) exactly as it does at niter 20 (3.9 s), and the reloaded
+ * index returns the same 20000 ids. At 256 dimensions the recall gap against
+ * the frozen baseline shrinks with niter (128/128/20: -0.068, 192/192/40:
+ * +0.006, 192/192/45: +0.010, 192/192/60: +0.017) while the build costs
+ * 0.3 s per 5 extra iterations, so 45 buys most of the margin back at 11.2 s
+ * instead of 12.6 s.
  * ------------------------------------------------------------------------- */
 #define SK_DIM_SMALL_DEFAULT                128
 #define SK_DEF_GRAPH_DEGREE_BIG             192
 #define SK_DEF_INTERMEDIATE_DEGREE_BIG      192
-#define SK_DEF_NITER_BIG                    60
+#define SK_DEF_NITER_BIG                    45
 
 /* ------------------------------------------------------------------------- *
  * Host thread count for the build.
