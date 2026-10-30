@@ -55,9 +55,9 @@
  * dimension of the data being built. The env overrides below still win.
  * ------------------------------------------------------------------------- */
 #define SK_DIM_SMALL_DEFAULT                128
-#define SK_DEF_GRAPH_DEGREE_BIG             192
-#define SK_DEF_INTERMEDIATE_DEGREE_BIG      192
-#define SK_DEF_NITER_BIG                    60
+#define SK_DEF_GRAPH_DEGREE_BIG             128
+#define SK_DEF_INTERMEDIATE_DEGREE_BIG      256
+#define SK_DEF_NITER_BIG                    100
 
 /* ------------------------------------------------------------------------- *
  * Host thread count for the build.
