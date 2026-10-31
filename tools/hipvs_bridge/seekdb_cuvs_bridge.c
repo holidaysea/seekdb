@@ -70,9 +70,17 @@
  * cannot measure locally.
  * ------------------------------------------------------------------------- */
 #define SK_DIM_SMALL_DEFAULT                128
-#define SK_DEF_GRAPH_DEGREE_BIG             192
+#define SK_DEF_GRAPH_DEGREE_BIG             128
 #define SK_DEF_INTERMEDIATE_DEGREE_BIG      192
-#define SK_DEF_NITER_BIG                    60
+#define SK_DEF_NITER_BIG                    100
+/* cuVS keeps an extra persistent workspace once search_width * degree exceeds
+ * ~256 (+390 MB on the 250K x 256 case, 1.46x the frozen baseline, which is over
+ * the relative_vram_limit gate); the same cliff shows up on the 128-dim data
+ * (734 MB at width 2 vs 1128 MB at width 4).  Keeping width * degree <= 256 holds
+ * the query peak at 1.01x of the baseline on both datasets, so both tiers search
+ * with width 2 (156 qps on SIFT-128 vs the baseline's 146, 108 on 256d vs 127). */
+#define SK_DEF_SEARCH_WIDTH_BIG             2
+#define SK_DEF_SEARCH_WIDTH                 2
 
 /* ------------------------------------------------------------------------- *
  * Host thread count for the build.
@@ -126,11 +134,11 @@ static long sk_env_long(const char* name, long fallback, long lo, long hi)
   return parsed;
 }
 
-/* Search-side knobs. Both default to the V5 behaviour (itopk = max(4*topk,
- * 512), search_width = 4), so not setting the variables is byte-identical to
- * V5. Raising them buys recall back when the graph is built with a smaller
- * candidate degree, and costs only time inside the search call. */
-static void sk_apply_search_params(cuvsCagraSearchParams_t sp, long topk)
+/* Search-side knobs: itopk = max(4*topk, 512) as in V5, search_width from the
+ * dimension tier (see SK_DEF_SEARCH_WIDTH*).  Raising them buys recall back
+ * when the graph is built with a smaller candidate degree, and costs only time
+ * inside the search call. */
+static void sk_apply_search_params(cuvsCagraSearchParams_t sp, long topk, long dim)
 {
   size_t required_itopk = (size_t)topk * 4;
   size_t itopk;
@@ -138,12 +146,9 @@ static void sk_apply_search_params(cuvsCagraSearchParams_t sp, long topk)
   if (required_itopk < 512) required_itopk = 512;
   itopk = (size_t)sk_env_long("SEEKDB_CUVS_ITOPK", 0, 0, 65536);
   if (itopk < required_itopk) itopk = required_itopk;
-  /* search_width >= 2 makes cuVS keep a persistent ~448 MB workspace on top of
-   * the graph: on the 250K x 256 case a one-client peak of 1060 MB becomes
-   * 1308 MB with eight clients (1.52x the frozen baseline's 861 MB), which trips
-   * the relative_vram_limit gate.  width=1 keeps the peak at the baseline's
-   * 1.07x and still gives 0.97x the baseline throughput, so it is the default. */
-  width = sk_env_long("SEEKDB_CUVS_SEARCH_WIDTH", 1, 1, 64);
+  width = sk_env_long("SEEKDB_CUVS_SEARCH_WIDTH",
+                      dim <= SK_DIM_SMALL_DEFAULT ? SK_DEF_SEARCH_WIDTH : SK_DEF_SEARCH_WIDTH_BIG,
+                      1, 64);
   if (sp->itopk_size < itopk) sp->itopk_size = itopk;
   sp->search_width = (uint32_t)width;
 }
@@ -388,7 +393,7 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
     if (h->sp == 0 || h->sp_topk != (size_t)topk) {
       if (h->sp) { cuvsCagraSearchParamsDestroy(h->sp); h->sp = 0; }
       if (cuvsCagraSearchParamsCreate(&h->sp) != CUVS_SUCCESS) { rc = 14; goto unlock; }
-      sk_apply_search_params(h->sp, (long)topk);
+      sk_apply_search_params(h->sp, (long)topk, h->dim);
       h->sp_topk = (size_t)topk;
     }
     qd = (float*)h->qd; nd = h->nd; dd = (float*)h->dd; sp = h->sp;
@@ -411,7 +416,7 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
     dt=qt; dt.dl_tensor.data=dd; dt.dl_tensor.dtype.code=kDLFloat; dt.dl_tensor.shape=dsh;
     if (sp == 0) {
       if (cuvsCagraSearchParamsCreate(&sp) != CUVS_SUCCESS) { rc = 14; goto unlock; }
-      sk_apply_search_params(sp, (long)topk);
+      sk_apply_search_params(sp, (long)topk, h->dim);
     }
     {
       cuvsFilter f; f.type=NO_FILTER; f.addr=(uintptr_t)0;
