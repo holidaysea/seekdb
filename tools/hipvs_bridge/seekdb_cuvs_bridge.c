@@ -83,7 +83,7 @@
  * tiers inside 1.01x of the baseline footprint, and the low-degree 128-dim graph
  * pays for the wider search: 394 qps against the baseline's 146 (2.70x) at
  * 32 x 4 (489 MB), while the 256-dim tier runs width 2 at 108 qps and 867.6 MB. */
-#define SK_DEF_SEARCH_WIDTH_BIG             3
+#define SK_DEF_SEARCH_WIDTH_BIG             4
 #define SK_DEF_SEARCH_WIDTH                 8
 
 /* In-process device memory read-out: on a shared GPU the per-card sysfs value is
@@ -157,6 +157,10 @@ static long sk_env_long(const char* name, long fallback, long lo, long hi)
  * inside the search call. */
 static void sk_apply_search_params(cuvsCagraSearchParams_t sp, long topk, long dim)
 {
+  /* Keep V5's candidate-list floor: itopk 512 is what the frozen baseline asks
+   * for as well, and the width test showed the search workspace does not move
+   * with width on this driver (base w4 861.1 MB vs our w4 861.5 MB), so there is
+   * nothing to buy back here and shrinking the pool would only cost recall. */
   size_t required_itopk = (size_t)topk * 4;
   size_t itopk;
   long width;
