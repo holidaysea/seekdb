@@ -83,9 +83,22 @@
  * tiers inside 1.01x of the baseline footprint, and the low-degree 128-dim graph
  * pays for the wider search: 394 qps against the baseline's 146 (2.70x) at
  * 32 x 4 (489 MB), while the 256-dim tier runs width 2 at 108 qps and 867.6 MB. */
-#define SK_DEF_SEARCH_WIDTH_BIG             2
-#define SK_DEF_SEARCH_WIDTH                 4
+#define SK_DEF_SEARCH_WIDTH_BIG             3
+#define SK_DEF_SEARCH_WIDTH                 8
 
+/* In-process device memory read-out: on a shared GPU the per-card sysfs value is
+ * polluted by other tenants, while cudaMemGetInfo sees the same device-global
+ * number but is sampled from inside the process that owns our index, so the
+ * deltas between two of our own phase markers are ours alone. */
+static void sk_trace_mem(const char* tag)
+{
+  { const char* on = getenv("SEEKDB_CUVS_TRACE"); if (on == 0 || on[0] != '1') return; }
+  size_t free_b = 0, total_b = 0;
+  if (cudaMemGetInfo(&free_b, &total_b) == cudaSuccess) {
+    fprintf(stderr, "[seekdb_cuvs] mem %s free=%zu total=%zu used=%zu\n",
+            tag, free_b, total_b, total_b - free_b);
+  }
+}
 /* ------------------------------------------------------------------------- *
  * Host thread count for the build.
  *
@@ -339,6 +352,7 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   }
   h->n = n; h->dim = dim;
   h->fast = (int)sk_env_long("SEEKDB_CUVS_SEARCH_FAST", 0, 0, 1);
+  sk_trace_mem("build_done");
   return h;
 
 fail_idx: cuvsCagraIndexDestroy(h->idx);
@@ -454,6 +468,7 @@ done:
             nq, topk, fast, t_alloc, t_h2d, t_kernel, t_d2h, sk_now_us() - search_t0);
   }
   pthread_mutex_unlock(&sk_search_mu);
+  sk_trace_mem("search_done");
   return rc;
 }
 
