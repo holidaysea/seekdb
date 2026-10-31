@@ -34,14 +34,19 @@ command -v cmake >/dev/null || { echo "cmake still not on PATH" >&2; exit 2; }
 
 echo "== 2/5 bridge .so =="
 mkdir -p "$(dirname "$BRIDGE_SO")"
-gcc -shared -fPIC -O2 -D__HIP_PLATFORM_AMD__ \
+# /usr/bin/gcc on purpose: step 1 put the devtools bin dir on PATH, and the
+# clang toolchain there does not have a usable libc for this compile.
+/usr/bin/gcc -shared -fPIC -O2 -D__HIP_PLATFORM_AMD__ \
   -I/opt/hipvs/include -I/opt/hipvs/include/cuvs -I/opt/rocm/include \
   -L/opt/hipvs/lib -Wl,-rpath,/opt/hipvs/lib \
   -o "$BRIDGE_SO" tools/hipvs_bridge/seekdb_cuvs_bridge.c -lcuvs_c -lpthread
 echo "   $BRIDGE_SO $(stat -c %s "$BRIDGE_SO") B, $(nm -D --defined-only "$BRIDGE_SO" | grep -c seekdb_cuvs) symbols"
 
 echo "== 3/5 cmake (cuVS ON) =="
-cmake -S "$REPO" -B build_release -DOB_BUILD_CUVS=ON -DCUVS_BRIDGE_LIB="$BRIDGE_SO"
+# CMAKE_BUILD_TYPE must be explicit: this tree's top level rejects anything but
+# release ("The compatibility CMake build supports only release").
+cmake -S "$REPO" -B build_release -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DOB_BUILD_CUVS=ON -DCUVS_BRIDGE_LIB="$BRIDGE_SO"
 grep -E "OB_BUILD_CUVS|CUVS_BRIDGE_LIB" build_release/CMakeCache.txt
 
 echo "== 4/5 build (jobs=$JOBS) =="
