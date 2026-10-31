@@ -36,15 +36,16 @@
  *
  * i.e. the graph quality is flat over this range while the build time halves.
  * The low-dimensional default goes even cheaper: real SIFT-1M@250K scores
- * recall@100 = 1.0000 at 64 / 96 / 20 as well (5.26 s build), with the same ids
- * after a reload. A 64-degree graph also leaves room for a wider search under
- * the width * degree budget of print 4 below (64 x 4 = 256), which is what makes
- * the low-dimensional tier twice as fast as the frozen baseline at query time.
+ * recall@100 = 0.9998 at 32 / 48 / 20 (5.08 s build, 394 qps at 8 connections),
+ * 1.0000 at 48 / 96 / 20 and at 64 / 96 / 20, with the same ids after a reload.
+ * A 32-degree graph also leaves room for a wider search under the width *
+ * degree budget of print 4 below (32 x 4 = 128, 64 x 4 = 256), which is what
+ * makes the low-dimensional tier 2.7x the frozen baseline at query time.
  * High-dimensional data gets a denser graph instead - see the dimension-aware
  * block below.
  * ------------------------------------------------------------------------- */
-#define SK_DEF_GRAPH_DEGREE      64
-#define SK_DEF_INTERMEDIATE_DEGREE 96
+#define SK_DEF_GRAPH_DEGREE      32
+#define SK_DEF_INTERMEDIATE_DEGREE 48
 #define SK_DEF_NITER              20
 
 /* ------------------------------------------------------------------------- *
@@ -80,8 +81,8 @@
  * the relative_vram_limit gate); the same cliff shows up on the 128-dim data
  * (673 MB at 64 x 4 vs 1095 MB at 96 x 4).  Staying at or below 256 keeps both
  * tiers inside 1.01x of the baseline footprint, and the low-degree 128-dim graph
- * pays for the wider search: 291 qps against the baseline's 146 (1.99x) at
- * 673.5 MB, while the 256-dim tier runs width 2 at 108 qps and 867.6 MB. */
+ * pays for the wider search: 394 qps against the baseline's 146 (2.70x) at
+ * 32 x 4 (489 MB), while the 256-dim tier runs width 2 at 108 qps and 867.6 MB. */
 #define SK_DEF_SEARCH_WIDTH_BIG             2
 #define SK_DEF_SEARCH_WIDTH                 4
 

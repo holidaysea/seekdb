@@ -34,12 +34,17 @@ command -v cmake >/dev/null || { echo "cmake still not on PATH" >&2; exit 2; }
 
 echo "== 2/5 bridge .so =="
 mkdir -p "$(dirname "$BRIDGE_SO")"
-# /usr/bin/gcc on purpose: step 1 put the devtools bin dir on PATH, and the
-# clang toolchain there does not have a usable libc for this compile.
-/usr/bin/gcc -shared -fPIC -O2 -D__HIP_PLATFORM_AMD__ \
-  -I/opt/hipvs/include -I/opt/hipvs/include/cuvs -I/opt/rocm/include \
-  -L/opt/hipvs/lib -Wl,-rpath,/opt/hipvs/lib \
-  -o "$BRIDGE_SO" tools/hipvs_bridge/seekdb_cuvs_bridge.c -lcuvs_c -lpthread
+# Compile in a shell whose PATH has no devtools: otherwise gcc of any flavour
+# still finds the devtools ld (gcc resolves ld through PATH too), and that ld
+# cannot find /lib64/ld-linux-x86-64.so.2 for this glibc.
+(
+  PATH=/usr/bin:/bin
+  export PATH
+  /usr/bin/gcc -shared -fPIC -O2 -D__HIP_PLATFORM_AMD__ \
+    -I/opt/hipvs/include -I/opt/hipvs/include/cuvs -I/opt/rocm/include \
+    -L/opt/hipvs/lib -Wl,-rpath,/opt/hipvs/lib \
+    -o "$BRIDGE_SO" tools/hipvs_bridge/seekdb_cuvs_bridge.c -lcuvs_c -lpthread
+)
 echo "   $BRIDGE_SO $(stat -c %s "$BRIDGE_SO") B, $(nm -D --defined-only "$BRIDGE_SO" | grep -c seekdb_cuvs) symbols"
 
 echo "== 3/5 cmake (cuVS ON) =="
