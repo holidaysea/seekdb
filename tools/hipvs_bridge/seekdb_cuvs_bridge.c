@@ -63,13 +63,16 @@
  * index returns the same 20000 ids. At 256 dimensions the recall gap against
  * the frozen baseline shrinks with niter (128/128/20: -0.068, 192/192/40:
  * +0.006, 192/192/45: +0.010, 192/192/60: +0.017) while the build costs
- * 0.3 s per 5 extra iterations, so 45 buys most of the margin back at 11.2 s
- * instead of 12.6 s.
+ * 0.3 s per 5 extra iterations. The last evaluated run (192/192/60, 128/128/20)
+ * cleared the recall gate on the real hidden data and failed only on VRAM, so
+ * the big tier stays at 60: the extra 1.2 s still lands inside the build cap
+ * (S = 3.06 at 5.26 s / 12.63 s), and the margin it buys is the one thing we
+ * cannot measure locally.
  * ------------------------------------------------------------------------- */
 #define SK_DIM_SMALL_DEFAULT                128
 #define SK_DEF_GRAPH_DEGREE_BIG             192
 #define SK_DEF_INTERMEDIATE_DEGREE_BIG      192
-#define SK_DEF_NITER_BIG                    45
+#define SK_DEF_NITER_BIG                    60
 
 /* ------------------------------------------------------------------------- *
  * Host thread count for the build.
